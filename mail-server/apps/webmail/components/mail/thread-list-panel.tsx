@@ -9,8 +9,9 @@ import { ThreadBulkActionBar } from '@/components/actions/thread-bulk-action-bar
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { useToast } from '@/components/system/toast-region';
 import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
-import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
+import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import { useJmapClient } from '@/lib/jmap/provider';
+import { getQueryClient } from '@/lib/query/client';
 import { buildThreadRouteHref, queryMailboxThreads, resolveThreadListRouteState, type ThreadListPageData, type ThreadListRow } from '@/lib/jmap/thread-list';
 import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 
@@ -46,6 +47,7 @@ function isRemovalAction(action: MailActionRequest) {
 
 export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage, topline }: ThreadListPanelProps) {
   const client = useJmapClient();
+  const queryClient = useMemo(() => getQueryClient(), []);
   const router = useRouter();
   const searchParams = useSearchParams();
   const { notify } = useToast();
@@ -191,7 +193,7 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
       const rollbackState = rollbackStateRef.current;
       if (rollbackState) {
         setCheckedThreadIds(rollbackState.checkedThreadIds);
-        setOptimisticRows(rollbackState.rows);
+        setOptimisticRows(null);
         router.replace(rollbackState.href);
       }
       notify(result.message);
@@ -205,6 +207,13 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
     }
 
     await threadQuery.refetch();
+    if (isRemovalAction(action)) {
+      await syncMailActionQueries({
+        accountId: activeAccountId,
+        currentMailboxId: activeMailboxId,
+        queryClient,
+      });
+    }
     router.refresh();
     setOptimisticRows(null);
     setPendingActionLabel(null);

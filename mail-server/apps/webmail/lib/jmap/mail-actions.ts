@@ -1,3 +1,5 @@
+import type { QueryClient } from '@tanstack/react-query';
+
 import type { ReaderThread } from '@/lib/jmap/message-reader';
 import type { JmapClient, JmapPatchObject, JmapSetInvocationError } from '@/lib/jmap/types';
 import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
@@ -56,6 +58,12 @@ export interface ProjectedThreadListResult {
 
 export interface ProjectedReaderThreadResult {
   readonly thread: ReaderThread | null;
+}
+
+export interface MailActionQuerySyncInput {
+  readonly accountId: string;
+  readonly currentMailboxId: string | null;
+  readonly queryClient: QueryClient;
 }
 
 function isSuccessfulMailboxId(value: boolean | undefined) {
@@ -331,4 +339,12 @@ export async function executeMailAction(input: MailActionExecutionInput): Promis
     kind: 'success',
     updatedEmailIds: updateEntries.map(([emailId]) => emailId),
   };
+}
+
+export async function syncMailActionQueries(input: MailActionQuerySyncInput) {
+  await input.queryClient.invalidateQueries({ queryKey: ['mailbox-shell', input.accountId] });
+
+  if (input.currentMailboxId) {
+    await input.queryClient.invalidateQueries({ queryKey: ['thread-list', input.accountId, input.currentMailboxId] });
+  }
 }

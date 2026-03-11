@@ -9,11 +9,12 @@ import { MailActionStrip } from '@/components/actions/mail-action-strip';
 import { useMailShellContext } from '@/components/mail/mail-shell';
 import { useToast } from '@/components/system/toast-region';
 import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
-import { applyOptimisticActionToReaderThread, executeMailAction, resolveMailboxRoleTargets, toReaderMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
+import { applyOptimisticActionToReaderThread, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toReaderMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 import { queryReaderThread, type ReaderAttachment, type ReaderMessage, type ReaderParticipant, type ReaderThread } from '@/lib/jmap/message-reader';
 import { toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
+import { getQueryClient } from '@/lib/query/client';
 import { THREAD_LIST_ROUTE_PARAM_THREAD_ID } from '@/lib/jmap/thread-list';
 import { sanitizeHtml } from '@/lib/sanitize/html';
 
@@ -346,6 +347,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const client = useJmapClient();
+  const queryClient = useMemo(() => getQueryClient(), []);
   const { notify } = useToast();
   const resolvedMailboxItems = mailboxItems.length > 0 ? mailboxItems : shellContext.mailboxItems;
   const bootstrapQuery = useJmapBootstrap(true);
@@ -475,7 +477,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
     });
 
     if (result.kind === 'failure') {
-      setOptimisticThread(rollbackThreadRef.current);
+      setOptimisticThread(null);
       if (rollbackHrefRef.current && rollbackHrefRef.current !== currentRoute) {
         router.replace(rollbackHrefRef.current);
       }
@@ -488,6 +490,11 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
 
     setPendingAction(null);
     if (!optimisticResult.thread) {
+      await syncMailActionQueries({
+        accountId: displayedThread.accountId,
+        currentMailboxId,
+        queryClient,
+      });
       setOptimisticThread(null);
       router.replace(clearThreadSelectionHref(pathname, searchParams));
     } else {

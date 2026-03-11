@@ -335,6 +335,7 @@ export function useRealtimeSync(input: UseRealtimeSyncInput) {
 
     let disposed = false;
     let currentAccess: JmapRealtimeAccess | null = null;
+    let transportFallbackActive = false;
 
     const startPolling = () => {
       clearPolling();
@@ -345,8 +346,24 @@ export function useRealtimeSync(input: UseRealtimeSyncInput) {
       }, POLL_INTERVAL_MS);
     };
 
+    const degradeTransportToPolling = (access: JmapRealtimeAccess) => {
+      transportFallbackActive = true;
+      currentAccess = toBoundarySafePollingAccess(access);
+      clearTransport();
+      setPhase('healthy', {
+        capabilityMode: currentAccess.mode,
+        errorMessage: null,
+        runtimeMode: 'polling',
+        toastMessage: null,
+      });
+    };
+
     const connectTransport = (access: JmapRealtimeAccess) => {
       clearTransport();
+
+      if (transportFallbackActive) {
+        return;
+      }
 
       if (access.mode === 'none') {
         return;
@@ -416,11 +433,7 @@ export function useRealtimeSync(input: UseRealtimeSyncInput) {
         queueSync('push');
       };
       source.onerror = () => {
-        setPhase('reconnecting', {
-          capabilityMode: access.mode,
-          runtimeMode: 'polling',
-          toastMessage: null,
-        });
+        degradeTransportToPolling(access);
       };
       transportCleanupRef.current = () => {
         source.onopen = null;
@@ -431,7 +444,7 @@ export function useRealtimeSync(input: UseRealtimeSyncInput) {
     };
 
     const reconnectTransport = () => {
-      if (!currentAccess || currentAccess.mode === 'none') {
+      if (transportFallbackActive || !currentAccess || currentAccess.mode === 'none') {
         return;
       }
 

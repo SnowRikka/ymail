@@ -62,6 +62,7 @@ class MockWebSocket {
 class MockEventSource {
   static instances: MockEventSource[] = [];
 
+  closeCount = 0;
   onerror: (() => void) | null = null;
   onmessage: ((event: { readonly data: string }) => void) | null = null;
   onopen: (() => void) | null = null;
@@ -71,6 +72,7 @@ class MockEventSource {
   }
 
   close() {
+    this.closeCount += 1;
     return undefined;
   }
 
@@ -412,7 +414,7 @@ describe('realtime-sync', () => {
     expect(client.thread.changes).toHaveBeenCalled();
   });
 
-  it('consumes event-source transport and falls back safely on transport error', async () => {
+  it('degrades event-source transport to stable polling after bridge failure', async () => {
     const versionRef: { current: 1 | 2 } = { current: 1 };
     const client = createMockClient(versionRef);
     realtimeDescriptor = {
@@ -433,6 +435,7 @@ describe('realtime-sync', () => {
     renderShell();
 
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const initialSourceCount = MockEventSource.instances.length;
     const source = MockEventSource.instances.at(-1);
     act(() => {
       source?.emitOpen();
@@ -442,9 +445,20 @@ describe('realtime-sync', () => {
     act(() => {
       source?.emitError();
     });
-    expect(screen.getByTestId('sync-reconnecting')).toBeInTheDocument();
 
-    expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询重连中');
+    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询同步正常'));
+    expect(screen.queryByTestId('sync-reconnecting')).not.toBeInTheDocument();
+    expect(source?.closeCount).toBe(1);
+
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    });
+
+    expect(MockEventSource.instances).toHaveLength(initialSourceCount);
   });
 
   it('surfaces sync-error when authoritative reconcile fails', async () => {

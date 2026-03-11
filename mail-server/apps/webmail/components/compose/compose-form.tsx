@@ -1,0 +1,803 @@
+'use client';
+
+import { useQuery } from '@tanstack/react-query';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { useToast } from '@/components/system/toast-region';
+import type { SafeSessionSummary } from '@/lib/auth/types';
+import {
+  areComposeFormStatesEqual,
+  buildComposeDraftKey,
+  buildComposePrefill,
+  EMPTY_COMPOSE_FORM_STATE,
+  hasComposeContent,
+  parseComposeRouteState,
+  type ComposeFormState,
+  type ComposeValidationErrors,
+  validateComposeForm,
+} from '@/lib/jmap/compose-core';
+import {
+  createDraftStatus,
+  findAttachmentFailure,
+  fromStoredAttachments,
+  hasPendingAttachment,
+  selectDefaultIdentityId,
+  submitComposeMessage,
+  toComposeIdentityOptions,
+  toComposeMailboxRoleState,
+  toStoredAttachments,
+  uploadAttachmentThroughBff,
+  type ComposeAttachmentRecord,
+  type ComposeDraftStatus,
+  type ComposeIdentityState,
+  type ComposeSubmissionFailure,
+} from '@/lib/jmap/compose-submit';
+import { queryReaderThread } from '@/lib/jmap/message-reader';
+import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
+import type { JmapMailboxObject, JmapQuerySort } from '@/lib/jmap/types';
+import { useComposeDraftStore } from '@/lib/state/compose-store';
+
+type ComposeFormPhase = 'draft' | 'empty' | 'prefill' | 'warning';
+
+type ComposeActionState =
+  | { readonly kind: 'idle'; readonly message: null }
+  | { readonly kind: 'info'; readonly message: string }
+  | { readonly kind: 'saved'; readonly message: string }
+  | { readonly kind: 'warning'; readonly message: string };
+
+interface ComposeInitialLoad {
+  readonly attachments: readonly ComposeAttachmentRecord[];
+  readonly form: ComposeFormState;
+  readonly identityId: string | null;
+  readonly message: string | null;
+  readonly phase: ComposeFormPhase;
+}
+
+interface DraftSnapshot {
+  readonly attachments: readonly ComposeAttachmentRecord[];
+  readonly form: ComposeFormState;
+  readonly identityId: string | null;
+}
+
+const AUTOSAVE_INTERVAL_MS = 12_000;
+const EMPTY_ERRORS: ComposeValidationErrors = { body: null, subject: null, to: null };
+const IDENTITY_PROPERTIES = ['id', 'name', 'email', 'replyTo', 'bcc', 'textSignature'] as const;
+const MAILBOX_PROPERTIES = ['id', 'name', 'role', 'sortOrder'] as const;
+const MAILBOX_QUERY_SORT: readonly JmapQuerySort[] = [
+  { isAscending: true, property: 'sortOrder' },
+  { isAscending: true, property: 'name' },
+];
+
+function resolveComposeAccountId(routeAccountId: string | null, bootstrap: ReturnType<typeof useJmapBootstrap>['data']) {
+  if (bootstrap?.status !== 'ready') {
+    return routeAccountId;
+  }
+
+  if (routeAccountId && bootstrap.session.accounts[routeAccountId]) {
+    return routeAccountId;
+  }
+
+  return bootstrap.session.primaryAccounts.mail ?? Object.keys(bootstrap.session.accounts)[0] ?? null;
+}
+
+function formatDraftTimestamp(value: number) {
+  return new Intl.DateTimeFormat('zh-CN', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: '2-digit' }).format(new Date(value));
+}
+
+function buildFallbackCloseHref(accountId: string | null) {
+  return accountId ? `/mail/inbox?accountId=${encodeURIComponent(accountId)}` : '/mail/inbox';
+}
+
+function intentTitle(intent: ReturnType<typeof parseComposeRouteState>['intent']) {
+  switch (intent) {
+    case 'reply':
+      return '回复邮件';
+    case 'reply-all':
+      return '全部回复';
+    case 'forward':
+      return '转发邮件';
+    default:
+      return '新建邮件';
+  }
+}
+
+function intentHint(intent: ReturnType<typeof parseComposeRouteState>['intent']) {
+  switch (intent) {
+    case 'reply':
+      return '回复会继承引用正文；身份、附件与自动保存现已接入真实发送链路。';
+    case 'reply-all':
+      return '全部回复会自动去重并排除当前账号地址，避免重复发给自己。';
+    case 'forward':
+      return '转发支持附件续传、草稿恢复与真实提交，不会在失败时丢失内容。';
+    default:
+      return '纯文本工作台现已支持身份切换、自动保存、附件上传与真实发送。';
+  }
+}
+
+function composePhaseLabel(phase: ComposeFormPhase) {
+  switch (phase) {
+    case 'draft':
+      return '已恢复草稿';
+    case 'prefill':
+      return '已带入引用';
+    case 'warning':
+      return '注意';
+    default:
+      return '空白草稿';
+  }
+}
+
+function buildAttachmentSignature(attachments: readonly ComposeAttachmentRecord[]) {
+  return JSON.stringify(
+    attachments.map((attachment) => ({
+      blobId: attachment.blobId,
+      errorMessage: attachment.errorMessage,
+      name: attachment.name,
+      progress: attachment.progress,
+      size: attachment.size,
+      state: attachment.state,
+      type: attachment.type,
+    })),
+  );
+}
+
+function formatAttachmentStateLabel(state: ComposeAttachmentRecord['state']) {
+  switch (state) {
+    case 'failed':
+      return '上传失败';
+    case 'queued':
+      return '等待上传';
+    case 'rejected':
+      return '已拒绝';
+    case 'uploaded':
+      return '已上传';
+    case 'uploading':
+      return '上传中';
+    default:
+      return state;
+  }
+}
+
+function hasDraftMaterial(form: ComposeFormState, attachments: readonly ComposeAttachmentRecord[]) {
+  return hasComposeContent(form) || attachments.length > 0;
+}
+
+function toFailureMessage(failure: ComposeSubmissionFailure | null) {
+  return failure?.message ?? null;
+}
+
+export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: SafeSessionSummary | null }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const client = useJmapClient();
+  const bootstrapQuery = useJmapBootstrap(true);
+  const { notify } = useToast();
+  const routeState = useMemo(() => parseComposeRouteState(searchParams), [searchParams]);
+  const accountId = resolveComposeAccountId(routeState.accountId, bootstrapQuery.data);
+  const draftKey = buildComposeDraftKey({ accountId, intent: routeState.intent, messageId: routeState.messageId, threadId: routeState.threadId });
+  const storedDraft = useComposeDraftStore((state) => state.drafts[draftKey] ?? null);
+  const [formState, setFormState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);
+  const [baselineState, setBaselineState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);
+  const [attachments, setAttachments] = useState<readonly ComposeAttachmentRecord[]>([]);
+  const [baselineAttachmentSignature, setBaselineAttachmentSignature] = useState<string>(buildAttachmentSignature([]));
+  const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(null);
+  const [baselineIdentityId, setBaselineIdentityId] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<ComposeValidationErrors>(EMPTY_ERRORS);
+  const [actionState, setActionState] = useState<ComposeActionState>({ kind: 'idle', message: null });
+  const [phase, setPhase] = useState<ComposeFormPhase>('empty');
+  const [draftStatus, setDraftStatus] = useState<ComposeDraftStatus>(createDraftStatus('idle'));
+  const [sendFailure, setSendFailure] = useState<ComposeSubmissionFailure | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [identityState, setIdentityState] = useState<ComposeIdentityState>({ kind: 'loading' });
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toRef = useRef<HTMLInputElement | null>(null);
+  const initializedSignatureRef = useRef<string | null>(null);
+  const latestSnapshotRef = useRef<DraftSnapshot>({ attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null });
+  const latestRouteStateRef = useRef(routeState);
+  const latestAccountIdRef = useRef(accountId);
+  const hasSentRef = useRef(false);
+  const selfEmail = sessionSummary?.username?.trim().toLowerCase() ?? null;
+  const needsQuotedPrefill = routeState.intent !== 'new';
+  const fallbackCloseHref = buildFallbackCloseHref(accountId);
+  const returnToHref = routeState.returnTo ?? fallbackCloseHref;
+
+  const threadQuery = useQuery({
+    enabled: needsQuotedPrefill && Boolean(accountId && routeState.threadId) && !storedDraft,
+    queryFn: () => queryReaderThread({ accountId: accountId as string, client, threadId: routeState.threadId as string }),
+    queryKey: ['compose-thread-source', accountId, routeState.threadId],
+    staleTime: 1000 * 30,
+  });
+
+  const identityQuery = useQuery({
+    enabled: Boolean(accountId),
+    queryFn: async () => {
+      const result = await client.identity.get({ accountId: accountId as string, properties: IDENTITY_PROPERTIES });
+
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+
+      if (result.result.kind !== 'success') {
+        throw new Error(result.result.error.description ?? '发件身份读取失败。');
+      }
+
+      return toComposeIdentityOptions(result.result.response.list);
+    },
+    queryKey: ['compose-identities', accountId],
+    staleTime: 1000 * 60,
+  });
+
+  const mailboxQuery = useQuery({
+    enabled: Boolean(accountId),
+    queryFn: async () => {
+      const queryResult = await client.mailbox.query({ accountId: accountId as string, sort: MAILBOX_QUERY_SORT });
+
+      if (!queryResult.ok) {
+        throw new Error(queryResult.error.message);
+      }
+
+      if (queryResult.result.kind !== 'success') {
+        throw new Error(queryResult.result.error.description ?? '邮箱列表查询失败。');
+      }
+
+      if (queryResult.result.response.ids.length === 0) {
+        return [] as readonly JmapMailboxObject[];
+      }
+
+      const getResult = await client.mailbox.get({ accountId: accountId as string, ids: queryResult.result.response.ids, properties: MAILBOX_PROPERTIES });
+
+      if (!getResult.ok) {
+        throw new Error(getResult.error.message);
+      }
+
+      if (getResult.result.kind !== 'success') {
+        throw new Error(getResult.result.error.description ?? '邮箱详情读取失败。');
+      }
+
+      return getResult.result.response.list;
+    },
+    queryKey: ['compose-mailboxes', accountId],
+    staleTime: 1000 * 60,
+  });
+
+  const mailboxRoleState = useMemo(() => toComposeMailboxRoleState(mailboxQuery.data ?? []), [mailboxQuery.data]);
+  const selectedIdentity = identityState.kind === 'ready'
+    ? identityState.identities.find((identity) => identity.id === selectedIdentityId) ?? null
+    : null;
+
+  const initialLoad = useMemo<ComposeInitialLoad | null>(() => {
+    if (storedDraft) {
+      return {
+        attachments: fromStoredAttachments(storedDraft.attachments ?? []),
+        form: storedDraft.form,
+        identityId: storedDraft.identityId ?? null,
+        message: `已恢复 ${formatDraftTimestamp(storedDraft.updatedAt)} 暂存的草稿。`,
+        phase: 'draft',
+      };
+    }
+
+    if (!needsQuotedPrefill) {
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: null, phase: 'empty' };
+    }
+
+    if (!accountId || !routeState.threadId) {
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: '缺少引用上下文，已回退为空白草稿。', phase: 'warning' };
+    }
+
+    if (threadQuery.isLoading) {
+      return null;
+    }
+
+    if (threadQuery.isError || !threadQuery.data) {
+      return {
+        attachments: [],
+        form: EMPTY_COMPOSE_FORM_STATE,
+        identityId: null,
+        message: threadQuery.isError ? (threadQuery.error instanceof Error ? threadQuery.error.message : '引用邮件读取失败，已回退为空白草稿。') : '未找到可引用的线程内容，已回退为空白草稿。',
+        phase: 'warning',
+      };
+    }
+
+    return {
+      attachments: [],
+      form: buildComposePrefill({ intent: routeState.intent, messageId: routeState.messageId, selfEmail, thread: threadQuery.data }).form,
+      identityId: null,
+      message: null,
+      phase: 'prefill',
+    };
+  }, [accountId, needsQuotedPrefill, routeState.intent, routeState.messageId, routeState.threadId, selfEmail, storedDraft, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
+
+  const attachmentSignature = useMemo(() => buildAttachmentSignature(attachments), [attachments]);
+  const isDirty = !areComposeFormStatesEqual(formState, baselineState)
+    || attachmentSignature !== baselineAttachmentSignature
+    || selectedIdentityId !== baselineIdentityId;
+
+  useEffect(() => {
+    latestSnapshotRef.current = { attachments, form: formState, identityId: selectedIdentityId };
+    latestRouteStateRef.current = routeState;
+    latestAccountIdRef.current = accountId;
+  }, [accountId, attachments, formState, routeState, selectedIdentityId]);
+
+  useEffect(() => {
+    if (identityQuery.isLoading) {
+      setIdentityState({ kind: 'loading' });
+      return;
+    }
+
+    if (identityQuery.isError) {
+      setIdentityState({ kind: 'error', message: identityQuery.error instanceof Error ? identityQuery.error.message : '发件身份读取失败。' });
+      return;
+    }
+
+    const identities = identityQuery.data ?? [];
+    setIdentityState({ kind: 'ready', identities, selectedIdentityId: selectDefaultIdentityId(identities, selectedIdentityId, sessionSummary?.username ?? null) });
+  }, [identityQuery.data, identityQuery.error, identityQuery.isError, identityQuery.isLoading, selectedIdentityId, sessionSummary?.username]);
+
+  useEffect(() => {
+    if (identityState.kind !== 'ready') {
+      return;
+    }
+
+    const nextIdentityId = selectDefaultIdentityId(identityState.identities, selectedIdentityId, sessionSummary?.username ?? null);
+
+    if (nextIdentityId !== selectedIdentityId) {
+      setSelectedIdentityId(nextIdentityId);
+    }
+  }, [identityState, selectedIdentityId, sessionSummary?.username]);
+
+  useEffect(() => {
+    if (!initialLoad) {
+      return;
+    }
+
+    const signature = `${draftKey}:${initialLoad.phase}:${storedDraft?.updatedAt ?? 'fresh'}`;
+
+    if (initializedSignatureRef.current === signature) {
+      return;
+    }
+
+    initializedSignatureRef.current = signature;
+    setFormState(initialLoad.form);
+    setBaselineState(initialLoad.form);
+    setAttachments(initialLoad.attachments);
+    setBaselineAttachmentSignature(buildAttachmentSignature(initialLoad.attachments));
+    setSelectedIdentityId(initialLoad.identityId);
+    setBaselineIdentityId(initialLoad.identityId);
+    setValidationErrors(EMPTY_ERRORS);
+    setPhase(initialLoad.phase);
+    setDraftStatus(createDraftStatus('idle', initialLoad.message ?? '等待修改'));
+    setSendFailure(null);
+    setActionState(initialLoad.message ? { kind: initialLoad.phase === 'warning' ? 'warning' : 'info', message: initialLoad.message } : { kind: 'idle', message: null });
+    hasSentRef.current = false;
+
+    queueMicrotask(() => {
+      if (routeState.intent === 'new') {
+        toRef.current?.focus();
+        return;
+      }
+
+      bodyRef.current?.focus();
+      bodyRef.current?.setSelectionRange(0, 0);
+    });
+  }, [draftKey, initialLoad, routeState.intent, storedDraft?.updatedAt]);
+
+  const persistDraft = useCallback((snapshot?: DraftSnapshot, reason?: 'autosave' | 'blur' | 'close' | 'failure') => {
+    const activeSnapshot = snapshot ?? latestSnapshotRef.current;
+
+    if (!hasDraftMaterial(activeSnapshot.form, activeSnapshot.attachments)) {
+      useComposeDraftStore.getState().clearDraft(draftKey);
+      setDraftStatus(createDraftStatus('idle', reason === 'close' ? '空白草稿已清理。' : '等待修改'));
+      setBaselineState(activeSnapshot.form);
+      setBaselineAttachmentSignature(buildAttachmentSignature(activeSnapshot.attachments));
+      setBaselineIdentityId(activeSnapshot.identityId);
+      return false;
+    }
+
+    setDraftStatus(createDraftStatus('saving', reason === 'blur' ? '字段失焦后已触发保存…' : '草稿保存中…'));
+    useComposeDraftStore.getState().saveDraft(draftKey, {
+      accountId: latestAccountIdRef.current,
+      attachments: toStoredAttachments(activeSnapshot.attachments),
+      form: activeSnapshot.form,
+      identityId: activeSnapshot.identityId,
+      intent: latestRouteStateRef.current.intent,
+      messageId: latestRouteStateRef.current.messageId,
+      returnTo: latestRouteStateRef.current.returnTo,
+      threadId: latestRouteStateRef.current.threadId,
+      updatedAt: Date.now(),
+    });
+    setBaselineState(activeSnapshot.form);
+    setBaselineAttachmentSignature(buildAttachmentSignature(activeSnapshot.attachments));
+    setBaselineIdentityId(activeSnapshot.identityId);
+    setDraftStatus(createDraftStatus('saved', reason === 'close' ? '草稿已暂存，本次关闭不会丢失输入内容。' : '草稿已自动保存。'));
+    return true;
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!isDirty || isSending) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      persistDraft(undefined, 'autosave');
+    }, AUTOSAVE_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [isDirty, isSending, persistDraft]);
+
+  useEffect(() => {
+    if (!isDirty) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => () => {
+    const latestSnapshot = latestSnapshotRef.current;
+
+    if (hasSentRef.current || !hasDraftMaterial(latestSnapshot.form, latestSnapshot.attachments)) {
+      return;
+    }
+
+    useComposeDraftStore.getState().saveDraft(draftKey, {
+      accountId: latestAccountIdRef.current,
+      attachments: toStoredAttachments(latestSnapshot.attachments),
+      form: latestSnapshot.form,
+      identityId: latestSnapshot.identityId,
+      intent: latestRouteStateRef.current.intent,
+      messageId: latestRouteStateRef.current.messageId,
+      returnTo: latestRouteStateRef.current.returnTo,
+      threadId: latestRouteStateRef.current.threadId,
+      updatedAt: Date.now(),
+    });
+  }, [draftKey]);
+
+  const updateField = <Key extends keyof ComposeFormState>(key: Key, value: ComposeFormState[Key]) => {
+    setFormState((current) => ({ ...current, [key]: value }));
+
+    if (validationErrors[key]) {
+      setValidationErrors((current) => ({ ...current, [key]: null }));
+    }
+
+    if (actionState.kind !== 'idle') {
+      setActionState({ kind: 'idle', message: null });
+    }
+
+    if (sendFailure) {
+      setSendFailure(null);
+    }
+
+    setDraftStatus(createDraftStatus('idle'));
+  };
+
+  const handleFieldBlur = () => {
+    persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'blur');
+  };
+
+  const saveDraftAndClose = () => {
+    const saved = persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'close');
+    setActionState(saved ? { kind: 'saved', message: '草稿已暂存，本次关闭不会丢失输入内容。' } : { kind: 'info', message: '当前草稿为空，已直接关闭。' });
+
+    if (saved) {
+      notify('草稿已暂存。');
+    }
+
+    router.push(returnToHref);
+  };
+
+  const handleAttachmentSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+
+    if (!accountId || files.length === 0) {
+      return;
+    }
+
+    const nextQueued = files.map<ComposeAttachmentRecord>((file, index) => ({
+      blobId: null,
+      errorMessage: null,
+      id: `attachment-${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      progress: 0,
+      size: file.size,
+      state: 'queued',
+      type: file.type || null,
+    }));
+
+    setAttachments((current) => [...current, ...nextQueued]);
+    setDraftStatus(createDraftStatus('saving', '附件队列已加入，正在上传…'));
+    setSendFailure(null);
+
+    for (const queuedAttachment of nextQueued) {
+      setAttachments((current) => current.map((attachment) => attachment.id === queuedAttachment.id ? { ...attachment, state: 'uploading' } : attachment));
+
+      try {
+        const uploaded = await uploadAttachmentThroughBff({
+          accountId,
+          file: files.find((file) => file.name === queuedAttachment.name && file.size === queuedAttachment.size) as File,
+          onProgress: (progress) => {
+            setAttachments((current) => current.map((attachment) => attachment.id === queuedAttachment.id ? { ...attachment, progress, state: 'uploading' } : attachment));
+          },
+        });
+
+        setAttachments((current) => current.map((attachment) => attachment.id === queuedAttachment.id ? {
+          ...attachment,
+          blobId: uploaded.blobId,
+          errorMessage: null,
+          progress: 100,
+          state: 'uploaded',
+          type: uploaded.type,
+        } : attachment));
+      } catch (error) {
+        const failure = (typeof error === 'object' && error && 'kind' in error && 'message' in error)
+          ? (error as ComposeSubmissionFailure)
+          : ({ kind: 'network-failure', message: '附件上传失败。' } satisfies ComposeSubmissionFailure);
+
+        setAttachments((current) => current.map((attachment) => attachment.id === queuedAttachment.id ? {
+          ...attachment,
+          errorMessage: failure.message,
+          progress: 0,
+          state: failure.kind === 'attachment-rejected' ? 'rejected' : 'failed',
+        } : attachment));
+        setSendFailure(failure);
+      }
+    }
+
+    persistDraft({ attachments: latestSnapshotRef.current.attachments, form: latestSnapshotRef.current.form, identityId: latestSnapshotRef.current.identityId }, 'autosave');
+  };
+
+  const handleSend = async () => {
+    if (isSending || hasSentRef.current) {
+      return;
+    }
+
+    const validation = validateComposeForm(formState);
+
+    if (!validation.ok) {
+      setValidationErrors(validation.errors);
+      setActionState({ kind: 'warning', message: validation.errors.to ?? '发送前校验未通过。' });
+      return;
+    }
+
+    if (!selectedIdentity) {
+      setSendFailure({ kind: 'upstream-validation', message: '请选择可用发件身份。' });
+      return;
+    }
+
+    const attachmentFailure = findAttachmentFailure(attachments);
+
+    if (attachmentFailure) {
+      setSendFailure(attachmentFailure);
+      return;
+    }
+
+    if (hasPendingAttachment(attachments)) {
+      setSendFailure({ kind: 'attachment-rejected', message: '附件仍在上传，请等待完成后再发送。' });
+      return;
+    }
+
+    setValidationErrors(EMPTY_ERRORS);
+    setSendFailure(null);
+    setIsSending(true);
+    setActionState({ kind: 'info', message: '正在提交到上游邮箱服务…' });
+
+    const result = await submitComposeMessage({ accountId: accountId as string, attachments, client, form: formState, identity: selectedIdentity, mailboxRoleState });
+
+    setIsSending(false);
+
+    if (result.kind === 'failure') {
+      setSendFailure(result.failure);
+      setActionState({ kind: 'warning', message: result.failure.message });
+      persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'failure');
+      return;
+    }
+
+    hasSentRef.current = true;
+    useComposeDraftStore.getState().clearDraft(draftKey);
+    setBaselineState(formState);
+    setBaselineAttachmentSignature(buildAttachmentSignature(attachments));
+    setBaselineIdentityId(selectedIdentityId);
+    setDraftStatus(createDraftStatus('saved', '上游提交成功，草稿已完成。'));
+    setActionState({ kind: 'saved', message: '邮件已发送，正在返回上一界面。' });
+    notify('邮件已发送。');
+    router.push(returnToHref);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLFormElement>) => {
+    const withCommand = event.metaKey || event.ctrlKey;
+
+    if (withCommand && event.key === 'Enter') {
+      event.preventDefault();
+      void handleSend();
+      return;
+    }
+
+    if (withCommand && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      saveDraftAndClose();
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded-[22px] border border-line/70 bg-canvas/72 px-4 py-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-muted">写信工作台</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-ink">{intentTitle(routeState.intent)}</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-muted">{intentHint(routeState.intent)}</p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-[11px] text-muted">
+            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">纯文本写信</span>
+            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">12 秒自动暂存</span>
+            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">同源附件上传</span>
+          </div>
+        </div>
+      </section>
+
+      {actionState.message ? (
+        <div aria-live="polite" className={[
+          'rounded-[20px] border px-4 py-3 text-sm leading-7',
+          actionState.kind === 'warning' ? 'border-amber-500/25 bg-amber-500/8 text-muted' : actionState.kind === 'saved' ? 'border-accent/30 bg-accent/10 text-ink' : 'border-line/70 bg-canvas/62 text-muted',
+        ].join(' ')}>
+          {actionState.message}
+        </div>
+      ) : null}
+
+      {sendFailure ? (
+        <div className="rounded-[20px] border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm leading-7 text-muted" data-testid="send-error-banner" role="alert">
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-amber-300">{sendFailure.kind}</span>
+          <p className="mt-2">{sendFailure.message}</p>
+        </div>
+      ) : null}
+
+      {initialLoad === null ? (
+        <div aria-busy="true" className="space-y-3">
+          <div className="loading-shimmer h-16 rounded-[20px] border border-line/70 bg-canvas/55" />
+          <div className="loading-shimmer h-[420px] rounded-[24px] border border-line/70 bg-canvas/55" />
+        </div>
+      ) : (
+        <form className="space-y-4" data-testid="compose-form" onKeyDown={handleKeyDown}>
+          <section className="rounded-[24px] border border-line/80 bg-canvas/66 p-4 lg:p-5">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <label className="block text-sm text-ink">
+                发件身份
+                <select
+                  aria-label="发件身份"
+                  className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
+                  data-testid="identity-select"
+                  disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
+                  onBlur={handleFieldBlur}
+                  onChange={(event) => {
+                    setSelectedIdentityId(event.target.value || null);
+                    setDraftStatus(createDraftStatus('idle'));
+                  }}
+                  value={selectedIdentityId ?? ''}
+                >
+                  <option value="">{identityState.kind === 'error' ? '身份读取失败' : identityState.kind === 'loading' ? '身份载入中…' : '请选择发件身份'}</option>
+                  {identityState.kind === 'ready' ? identityState.identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.label}</option>) : null}
+                </select>
+              </label>
+
+              <div className="rounded-[20px] border border-line/70 bg-panel/72 px-4 py-3 text-sm text-muted">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-accent/80">草稿状态</p>
+                <p aria-live="polite" className="mt-2" data-testid="draft-status">{draftStatus.message}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <label className="block text-sm text-ink">
+                收件人
+                <input
+                  aria-describedby="compose-to-hint compose-to-error"
+                  aria-invalid={validationErrors.to ? 'true' : 'false'}
+                  className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
+                  data-testid="compose-to"
+                  onBlur={handleFieldBlur}
+                  onChange={(event) => updateField('to', event.target.value)}
+                  placeholder="例如：Alice <alice@example.com>, team@example.com"
+                  ref={toRef}
+                  value={formState.to}
+                />
+                <span className="mt-2 block text-xs leading-6 text-muted" id="compose-to-hint">支持逗号、分号或换行分隔；回复类场景会自动去重并排除当前账号。</span>
+                {validationErrors.to ? <span className="mt-2 block text-xs leading-6 text-amber-300" id="compose-to-error">{validationErrors.to}</span> : null}
+              </label>
+
+              <label className="block text-sm text-ink">
+                主题
+                <input
+                  aria-label="主题"
+                  className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
+                  data-testid="compose-subject"
+                  onBlur={handleFieldBlur}
+                  onChange={(event) => updateField('subject', event.target.value)}
+                  placeholder="写一行清晰主题"
+                  value={formState.subject}
+                />
+              </label>
+            </div>
+
+            <label className="mt-4 block text-sm text-ink">
+              正文
+              <textarea
+                aria-label="正文"
+                className="mt-2 min-h-[260px] w-full rounded-[28px] border border-line bg-panel/90 px-4 py-4 text-sm leading-7 text-ink outline-none transition hover:border-accent/40 focus:border-accent sm:min-h-[320px]"
+                data-testid="compose-body"
+                onBlur={handleFieldBlur}
+                onChange={(event) => updateField('body', event.target.value)}
+                placeholder="纯文本写作区。回复与转发会把引用内容放在当前输入区域下方。"
+                ref={bodyRef}
+                value={formState.body}
+              />
+            </label>
+
+            <section className="mt-4 rounded-[24px] border border-line/80 bg-canvas/62 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-accent/80">附件</p>
+                  <p className="mt-2 text-sm text-muted">附件会先通过受保护上传通道暂存，再进入真实发送流程。</p>
+                </div>
+                <>
+                  <input data-testid="attachment-upload" hidden multiple onChange={(event) => { void handleAttachmentSelect(event); }} ref={fileInputRef} type="file" />
+                  <button className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent" onClick={() => fileInputRef.current?.click()} type="button">
+                    选择附件
+                  </button>
+                </>
+              </div>
+
+              <div className="mt-4 space-y-3" data-testid="attachment-progress">
+                {attachments.length === 0 ? <p className="text-sm text-muted">尚未添加附件。</p> : attachments.map((attachment) => (
+                  <div className="rounded-[18px] border border-line/70 bg-panel/72 px-4 py-3" key={attachment.id}>
+                    <div className="flex items-center justify-between gap-3 text-sm text-ink">
+                      <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
+                      <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{formatAttachmentStateLabel(attachment.state)}</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-canvas/80" role="progressbar" aria-label={`${attachment.name} 上传进度`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={attachment.progress} aria-valuetext={`${formatAttachmentStateLabel(attachment.state)}，${attachment.progress}%`}>
+                      <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${attachment.progress}%` }} />
+                    </div>
+                    <p className="mt-2 text-xs leading-6 text-muted">{attachment.errorMessage ?? `${attachment.progress}% · ${(attachment.size / 1024).toFixed(1)} KB`}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </section>
+
+          <section className="flex flex-col gap-3 rounded-[24px] border border-line/80 bg-canvas/62 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{composePhaseLabel(phase)}</span>
+              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{isDirty ? '尚未保存' : '已同步'}</span>
+              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{returnToHref === fallbackCloseHref ? '返回收件箱' : '返回线程'}</span>
+              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">Ctrl / Cmd + Enter 发送</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button aria-keyshortcuts="Control+S Meta+S" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent sm:flex-none" data-testid="compose-save-close" onClick={saveDraftAndClose} type="button">
+                暂存并关闭
+              </button>
+              <button aria-keyshortcuts="Control+Enter Meta+Enter" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60 sm:flex-none" data-testid="compose-send" disabled={isSending} onClick={() => { void handleSend(); }} type="button">
+                {isSending ? '发送中…' : '发送'}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[24px] border border-dashed border-line/70 bg-canvas/58 p-4 text-sm leading-7 text-muted">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-[11px] uppercase tracking-[0.28em] text-accent/80">返回路径</span>
+              <span className="font-mono text-[11px] text-muted">{returnToHref}</span>
+            </div>
+            <p className="mt-3">自动保存会在固定间隔与字段失焦时触发；上传失败或提交失败时，正文、附件与草稿会保留在当前工作台。</p>
+            <p className="mt-2">若你想直接返回阅读器，可使用当前入口继续回到：<button className="ml-2 inline-flex items-center rounded-full border border-line/70 px-3 py-1 font-mono text-[11px] text-ink transition hover:border-accent/50 hover:text-accent" onClick={() => router.push(returnToHref)} type="button">返回上一步</button></p>
+            {toFailureMessage(sendFailure) ? <p className="mt-2 text-amber-300">失败恢复：{toFailureMessage(sendFailure)}</p> : null}
+          </section>
+        </form>
+      )}
+    </div>
+  );
+}

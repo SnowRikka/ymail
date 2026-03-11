@@ -1,0 +1,23 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/blob/[blobId]/route": "app/api/blob/[blobId]/route.js",
+  "/api/jmap/download/[accountId]/[blobId]/route": "app/api/jmap/download/[accountId]/[blobId]/route.js",
+  "/api/jmap/route": "app/api/jmap/route.js",
+  "/api/jmap/session/route": "app/api/jmap/session/route.js",
+  "/api/jmap/upload/[accountId]/route": "app/api/jmap/upload/[accountId]/route.js",
+  "/api/realtime/route": "app/api/realtime/route.js",
+  "/api/test/session/route": "app/api/test/session/route.js",
+  "/auth/login/route": "app/auth/login/route.js",
+  "/auth/logout/route": "app/auth/logout/route.js",
+  "/auth/session/route": "app/auth/session/route.js",
+  "/icon.svg/route": "app/icon.svg/route.js",
+  "/api/realtime/stream/route": "app/api/realtime/stream/route.js",
+  "/login/page": "app/login/page.js",
+  "/page": "app/page.js",
+  "/mail/compose/page": "app/mail/compose/page.js",
+  "/mail/inbox/page": "app/mail/inbox/page.js",
+  "/mail/mailbox/[mailboxId]/page": "app/mail/mailbox/[mailboxId]/page.js",
+  "/mail/search/page": "app/mail/search/page.js",
+  "/mail/thread/[threadId]/page": "app/mail/thread/[threadId]/page.js",
+  "/mail/settings/preferences/page": "app/mail/settings/preferences/page.js"
+}

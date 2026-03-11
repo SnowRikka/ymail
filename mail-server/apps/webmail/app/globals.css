@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-canvas: 10 10 10;
+  --color-panel: 22 22 22;
+  --color-mist: 14 14 14;
+  --color-line: 31 31 31;
+  --color-ink: 237 237 237;
+  --color-muted: 136 136 136;
+  --color-accent: 0 122 255;
+  --color-accent-soft: 17 35 56;
+  --color-accent-deep: 112 183 255;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at top left, rgba(0, 122, 255, 0.1), transparent 22%),
+    radial-gradient(circle at top right, rgba(0, 122, 255, 0.06), transparent 18%),
+    radial-gradient(circle at bottom right, rgba(255, 255, 255, 0.03), transparent 18%),
+    rgb(var(--color-canvas));
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: rgb(var(--color-ink));
+  background: transparent;
+  font-family: var(--font-sans), sans-serif;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgb(var(--color-accent) / 0.28);
+  color: rgb(var(--color-ink));
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+:where(a, button, input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid rgb(var(--color-accent) / 0.82);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgb(var(--color-accent) / 0.14);
+}
+
+.shell-surface {
+  background:
+    linear-gradient(180deg, rgba(14, 14, 14, 0.98), rgba(8, 8, 8, 0.98)),
+    linear-gradient(120deg, rgba(0, 122, 255, 0.03), transparent 30%);
+  backdrop-filter: blur(18px);
+}
+
+.ink-muted {
+  color: rgb(var(--color-muted));
+}
+
+.stage-reveal {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: stage-reveal 0.48s var(--ease-out) forwards;
+  animation-delay: var(--stage-delay, 0s);
+}
+
+.loading-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes stage-reveal {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .stage-reveal,
+  .loading-shimmer {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mail-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(280px, 360px) minmax(0, 1fr);
+}
+
+@media (max-width: 1120px) {
+  .mail-grid {
+    grid-template-columns: 240px minmax(220px, 300px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 920px) {
+  .mail-grid {
+    grid-template-columns: 1fr;
+  }
+}

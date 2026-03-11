@@ -1,0 +1,68 @@
+[package]
+name = "stalwart"
+description = "Stalwart Mail and Collaboration Server"
+authors = [ "Stalwart Labs LLC <hello@stalw.art>"]
+repository = "https://github.com/stalwartlabs/stalwart"
+homepage = "https://stalw.art"
+keywords = ["imap", "jmap", "smtp", "email", "mail", "webdav", "server"]
+categories = ["email"]
+license = "AGPL-3.0-only OR LicenseRef-SEL"
+version = "0.15.5"
+edition = "2024"
+
+[[bin]]
+name = "stalwart"
+path = "src/main.rs"
+
+[dependencies]
+store = { path = "../store" }
+jmap = { path = "../jmap" }
+types = { path = "../types" }
+smtp = { path = "../smtp" }
+imap = { path = "../imap" }
+pop3 = { path = "../pop3" }
+spam-filter = { path = "../spam-filter" }
+managesieve = { path = "../managesieve" }
+common = { path = "../common" }
+email = { path = "../email" }
+directory = { path = "../directory" }
+http = { path = "../http" }
+dav = { path = "../dav" }
+groupware = { path = "../groupware" }
+services = { path = "../services" }
+trc = { path = "../trc" }
+utils = { path = "../utils" }
+migration = { path = "../migration" }
+tokio = { version = "1.47", features = ["full"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+jemallocator = "0.5.0"
+
+[features]
+#default = ["sqlite", "postgres", "mysql", "rocks", "s3", "redis", "azure", "nats", "enterprise"]
+default = ["rocks", "enterprise"]
+sqlite = ["store/sqlite"]
+foundationdb = ["store/foundation", "common/foundation"]
+postgres = ["store/postgres"]
+mysql = ["store/mysql"]
+rocks = ["store/rocks"]
+s3 = ["store/s3"]
+redis = ["store/redis"]
+nats = ["store/nats"]
+azure = ["store/azure"]
+zenoh = ["store/zenoh"]
+kafka = ["store/kafka"]
+enterprise = [ "jmap/enterprise", 
+               "smtp/enterprise", 
+               "common/enterprise", 
+               "store/enterprise", 
+               "managesieve/enterprise", 
+               "directory/enterprise", 
+               "email/enterprise",
+               "spam-filter/enterprise",
+               "http/enterprise",
+               "dav/enterprise",
+               "groupware/enterprise",
+               "trc/enterprise",
+               "services/enterprise",
+               "migration/enterprise" ]

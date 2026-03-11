@@ -1,6 +1,6 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
@@ -51,7 +51,11 @@ function renderWithQueryClient(node: React.ReactNode) {
 function createThread(): ReaderThread {
   return {
     accountId: 'primary',
+    emailIds: ['message-1'],
     id: 'thread-1',
+    isFlagged: false,
+    isUnread: true,
+    mailboxIds: { inbox: true },
     messageCount: 1,
     messages: [
       {
@@ -67,6 +71,9 @@ function createThread(): ReaderThread {
         ],
         from: [{ email: 'alice@example.com', label: 'Alice', name: 'Alice' }],
         id: 'message-1',
+        isFlagged: false,
+        isUnread: true,
+        mailboxIds: { inbox: true },
         preview: '第一行',
         receivedAt: '2026-03-10T10:00:00.000Z',
         replyTo: [{ email: 'reply@example.com', label: 'Reply Desk', name: 'Reply Desk' }],
@@ -187,5 +194,94 @@ describe('compose-core', () => {
 
     expect(screen.getByTestId('compose-subject')).toHaveValue('持久化草稿');
     expect(screen.getByTestId('draft-status')).toHaveTextContent(/已恢复 .* 暂存的草稿。/);
+  });
+
+  it('keeps focus on subject after recipient blur autosaves a fresh compose', async () => {
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    const toField = screen.getByTestId('compose-to');
+    const subjectField = screen.getByTestId('compose-subject');
+
+    await waitFor(() => expect(toField).toHaveFocus());
+
+    fireEvent.change(toField, { target: { value: 'alice@example.com' } });
+    await act(async () => {
+      subjectField.focus();
+      fireEvent.blur(toField);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent('草稿已自动保存。'));
+    await waitFor(() => expect(subjectField).toHaveFocus());
+    expect(toField).not.toHaveFocus();
+  });
+
+  it('lets restored drafts continue editing away from compose-to after blur save', async () => {
+    useComposeDraftStore.getState().saveDraft('new::primary::standalone-thread::latest-message', {
+      accountId: 'primary',
+      attachments: [],
+      form: {
+        body: '已恢复正文',
+        subject: '已恢复主题',
+        to: 'alice@example.com',
+      },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: null,
+      threadId: null,
+      updatedAt: Date.now(),
+    });
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    const toField = screen.getByTestId('compose-to');
+    const subjectField = screen.getByTestId('compose-subject');
+    const bodyField = screen.getByTestId('compose-body');
+
+    await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent(/已恢复 .* 暂存的草稿。/));
+    expect(subjectField).toHaveValue('已恢复主题');
+
+    fireEvent.change(subjectField, { target: { value: '继续编辑后的主题' } });
+    await act(async () => {
+      bodyField.focus();
+      fireEvent.blur(subjectField);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent('草稿已自动保存。'));
+    await waitFor(() => expect(bodyField).toHaveFocus());
+    expect(toField).not.toHaveFocus();
+    expect(subjectField).toHaveValue('继续编辑后的主题');
+  });
+
+  it('keeps focus on subject during interval autosave for a fresh compose', async () => {
+    vi.useFakeTimers();
+
+    try {
+      renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+      const toField = screen.getByTestId('compose-to');
+      const subjectField = screen.getByTestId('compose-subject');
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(toField).toHaveFocus();
+
+      fireEvent.change(toField, { target: { value: 'alice@example.com' } });
+      await act(async () => {
+        subjectField.focus();
+        vi.advanceTimersByTime(12_000);
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('draft-status')).toHaveTextContent('草稿已自动保存。');
+      expect(subjectField).toHaveFocus();
+      expect(toField).not.toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

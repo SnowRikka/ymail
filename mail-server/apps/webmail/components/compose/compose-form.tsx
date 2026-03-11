@@ -193,7 +193,8 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const toRef = useRef<HTMLInputElement | null>(null);
-  const initializedSignatureRef = useRef<string | null>(null);
+  const initializedDraftSignatureRef = useRef<string | null>(null);
+  const hasLocalSessionChangesRef = useRef(false);
   const latestSnapshotRef = useRef<DraftSnapshot>({ attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null });
   const latestRouteStateRef = useRef(routeState);
   const latestAccountIdRef = useRef(accountId);
@@ -354,11 +355,16 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     const signature = `${draftKey}:${initialLoad.phase}:${storedDraft?.updatedAt ?? 'fresh'}`;
 
-    if (initializedSignatureRef.current === signature) {
+    if (initializedDraftSignatureRef.current === signature) {
       return;
     }
 
-    initializedSignatureRef.current = signature;
+    if (initializedDraftSignatureRef.current?.startsWith(`${draftKey}:`) && hasLocalSessionChangesRef.current) {
+      return;
+    }
+
+    initializedDraftSignatureRef.current = signature;
+    hasLocalSessionChangesRef.current = false;
     setFormState(initialLoad.form);
     setBaselineState(initialLoad.form);
     setAttachments(initialLoad.attachments);
@@ -385,6 +391,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
   const persistDraft = useCallback((snapshot?: DraftSnapshot, reason?: 'autosave' | 'blur' | 'close' | 'failure') => {
     const activeSnapshot = snapshot ?? latestSnapshotRef.current;
+    hasLocalSessionChangesRef.current = true;
 
     if (!hasDraftMaterial(activeSnapshot.form, activeSnapshot.attachments)) {
       useComposeDraftStore.getState().clearDraft(draftKey);
@@ -461,6 +468,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   }, [draftKey]);
 
   const updateField = <Key extends keyof ComposeFormState>(key: Key, value: ComposeFormState[Key]) => {
+    hasLocalSessionChangesRef.current = true;
     setFormState((current) => ({ ...current, [key]: value }));
 
     if (validationErrors[key]) {
@@ -501,6 +509,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       return;
     }
 
+    hasLocalSessionChangesRef.current = true;
     const nextQueued = files.map<ComposeAttachmentRecord>((file, index) => ({
       blobId: null,
       errorMessage: null,
@@ -674,12 +683,13 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
                   aria-label="发件身份"
                   className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
                   data-testid="identity-select"
-                  disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
-                  onBlur={handleFieldBlur}
-                  onChange={(event) => {
-                    setSelectedIdentityId(event.target.value || null);
-                    setDraftStatus(createDraftStatus('idle'));
-                  }}
+                   disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
+                   onBlur={handleFieldBlur}
+                   onChange={(event) => {
+                     hasLocalSessionChangesRef.current = true;
+                     setSelectedIdentityId(event.target.value || null);
+                     setDraftStatus(createDraftStatus('idle'));
+                   }}
                   value={selectedIdentityId ?? ''}
                 >
                   <option value="">{identityState.kind === 'error' ? '身份读取失败' : identityState.kind === 'loading' ? '身份载入中…' : '请选择发件身份'}</option>

@@ -4,6 +4,8 @@ npm-cache/
 scripts/
 test-results/
 **/test-results/
+.next/
+**/.next/
 
 参考风格.html
 

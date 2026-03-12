@@ -9,7 +9,7 @@ import { ThreadBulkActionBar } from '@/components/actions/thread-bulk-action-bar
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { useToast } from '@/components/system/toast-region';
 import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
-import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
+import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, isDeleteOnlyMailboxRole, resolveMailboxRoleTargets, shouldHideSpamActionForMailboxRole, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import { useJmapClient } from '@/lib/jmap/provider';
 import { getQueryClient } from '@/lib/query/client';
 import { buildThreadRouteHref, queryMailboxThreads, resolveThreadListRouteState, type ThreadListPageData, type ThreadListRow } from '@/lib/jmap/thread-list';
@@ -43,10 +43,6 @@ function focusThreadButton(threadId: string | null) {
 
 function isRemovalAction(action: MailActionRequest) {
   return action.type === 'archive' || action.type === 'delete' || action.type === 'move' || action.type === 'not-spam' || action.type === 'spam';
-}
-
-function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
-  return role === 'drafts' || role === 'sent' || role === 'trash';
 }
 
 export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage, topline }: ThreadListPanelProps) {
@@ -102,6 +98,7 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
   const rows = optimisticRows ?? threadQuery.data?.rows ?? [];
   const checkedThreadIdSet = useMemo(() => new Set(checkedThreadIds), [checkedThreadIds]);
   const deleteOnlyRowActions = isDeleteOnlyMailboxRole(activeMailbox?.role ?? null);
+  const hideSpamRowAction = shouldHideSpamActionForMailboxRole(activeMailbox?.role ?? null);
 
   const openFreshCompose = () => {
     router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
@@ -387,7 +384,7 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
                       >
                         删除
                       </button>
-                      {deleteOnlyRowActions ? null : (
+                      {hideSpamRowAction ? null : (
                         <button
                           aria-label={`标记线程为垃圾邮件：${row.subject}`}
                           className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"

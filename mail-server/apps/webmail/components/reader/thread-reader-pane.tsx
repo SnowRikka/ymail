@@ -9,7 +9,7 @@ import { MailActionStrip } from '@/components/actions/mail-action-strip';
 import { useMailShellContext } from '@/components/mail/mail-shell';
 import { useToast } from '@/components/system/toast-region';
 import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
-import { applyOptimisticActionToReaderThread, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toReaderMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
+import { applyOptimisticActionToReaderThread, executeMailAction, isDeleteOnlyMailboxRole, resolveMailboxRoleTargets, shouldHideSpamActionForMailboxRole, syncMailActionQueries, toReaderMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 import { queryReaderThread, type ReaderAttachment, type ReaderMessage, type ReaderParticipant, type ReaderThread } from '@/lib/jmap/message-reader';
 import { toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
@@ -47,10 +47,6 @@ function clearThreadSelectionHref(pathname: string, searchParams: URLSearchParam
   nextParams.delete(THREAD_LIST_ROUTE_PARAM_THREAD_ID);
   const query = nextParams.toString();
   return query.length > 0 ? `${pathname}?${query}` : pathname;
-}
-
-function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
-  return role === 'drafts' || role === 'sent' || role === 'trash';
 }
 
 function resolveCurrentMailboxId(pathname: string, searchParams: URLSearchParams, mailboxItems: readonly MailboxNavigationItem[], roleTargets: ReturnType<typeof resolveMailboxRoleTargets>) {
@@ -508,6 +504,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
   const readerCanSpam = currentMailboxId !== null && roleTargets.junkId !== null;
   const currentMailboxRole = resolvedMailboxItems.find((mailbox) => mailbox.id === currentMailboxId)?.role ?? null;
   const deleteOnlyReaderActions = isDeleteOnlyMailboxRole(currentMailboxRole);
+  const hideSpamReaderAction = shouldHideSpamActionForMailboxRole(currentMailboxRole);
 
   return (
     <div className="space-y-4">
@@ -532,7 +529,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
               readLabel={displayedThread.isUnread ? '标记已读' : '标记未读'}
               starLabel={displayedThread.isFlagged ? '取消星标' : '加星'}
               testIdPrefix="reader"
-              visibility={deleteOnlyReaderActions ? { archive: false, markRead: false, spam: false, star: false } : undefined}
+              visibility={deleteOnlyReaderActions ? { archive: false, markRead: false, spam: false, star: false } : hideSpamReaderAction ? { spam: false } : undefined}
             />
             {deleteOnlyReaderActions ? null : (
               <div className="flex flex-wrap gap-2">

@@ -12,9 +12,9 @@ export default async function MailboxPage({
 
   return (
     <MailShell
-      eyebrow="邮箱导航"
-      intro="当前文件夹延续同一套黑曜工作台：左侧切换邮箱，中间浏览线程，右侧稳定阅读正文与附件。"
-      readerTitle="邮箱工作台"
+      eyebrow="邮箱"
+      intro="左侧保留系统邮箱切换，中间浏览线程，右侧稳定阅读正文与附件。"
+      readerTitle="邮件"
       sectionTitle="文件夹"
       sessionSummary={sessionSummary}
     >

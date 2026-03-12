@@ -14,7 +14,7 @@ import { RealtimeStatus } from '@/components/system/realtime-status';
 import type { SafeSessionSummary } from '@/lib/auth/types';
 import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
-import { buildMailboxShellViewModel, queryMailboxCollection, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel, toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
+import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel, toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
 import { buildSearchRouteHref, resolveSearchRouteState } from '@/lib/jmap/search';
 import type { JmapMailboxObject } from '@/lib/jmap/types';
 import { useRealtimeSync } from '@/lib/realtime/sync';
@@ -106,7 +106,7 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
   const accountOptions = readySession ? toMailboxAccountOptions(readySession) : [];
   const accountIdFromUrl = searchParams.get('accountId');
   const searchMailboxId = searchParams.get('mailboxId');
-  const activeAccountId = accountOptions.find((account) => account.id === accountIdFromUrl)?.id ?? readySession?.primaryAccounts.mail ?? accountOptions[0]?.id ?? null;
+  const activeAccountId = readySession ? resolveMailboxAccountId(readySession, accountIdFromUrl) : null;
   const currentRoute = searchParams.toString() ? `${pathname}?${searchParams.toString()}` : pathname;
 
   const mailboxQuery = useQuery<MailboxCollectionData | readonly JmapMailboxObject[]>({

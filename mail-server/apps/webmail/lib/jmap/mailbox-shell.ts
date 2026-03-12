@@ -126,6 +126,24 @@ export function toMailboxAccountOptions(session: JmapSessionResource): readonly 
     }));
 }
 
+export function resolveMailboxAccountId(session: JmapSessionResource, preferredAccountId?: string | null): string | null {
+  const accountOptions = toMailboxAccountOptions(session);
+
+  if (preferredAccountId) {
+    const preferredAccount = accountOptions.find((account) => account.id === preferredAccountId);
+    if (preferredAccount) {
+      return preferredAccount.id;
+    }
+  }
+
+  const primaryMailAccountId = session.primaryAccounts.mail;
+  const primaryMailAccount = primaryMailAccountId
+    ? accountOptions.find((account) => account.id === primaryMailAccountId)
+    : null;
+
+  return primaryMailAccount?.id ?? accountOptions[0]?.id ?? null;
+}
+
 function getAccountLabel(account: JmapSessionAccount | undefined) {
   if (!account) {
     return '无可用账号';

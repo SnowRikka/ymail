@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MailShell } from '@/components/mail/mail-shell';
 import { ToastProvider } from '@/components/system/toast-region';
-import { buildMailboxShellViewModel } from '@/lib/jmap/mailbox-shell';
+import { buildMailboxShellViewModel, resolveMailboxAccountId } from '@/lib/jmap/mailbox-shell';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 
 async function renderShell() {
@@ -220,6 +220,24 @@ describe('mailbox-shell', () => {
     expect(viewModel.customItems.map((item) => item.id)).toEqual(['project-root', 'project-child']);
   });
 
+  it('falls back to the first usable mail account when primary mail account is invalid', () => {
+    expect(resolveMailboxAccountId({
+      ...mockSession,
+      primaryAccounts: {
+        ...mockSession.primaryAccounts,
+        mail: 'ghost-account',
+      },
+    } as never)).toBe('primary');
+  });
+
+  it('preserves valid route account selection', () => {
+    expect(resolveMailboxAccountId(mockSession as never, 'shared')).toBe('shared');
+  });
+
+  it('ignores unusable route account ids and falls back to a valid mail account', () => {
+    expect(resolveMailboxAccountId(mockSession as never, 'ghost-account')).toBe('primary');
+  });
+
   it('renders unread counters, active mailbox state, and stable selectors', async () => {
     await renderShell();
 
@@ -229,6 +247,49 @@ describe('mailbox-shell', () => {
     expect(screen.getByTestId('account-switcher')).toBeInTheDocument();
     expect(screen.getByTestId('new-mail-button')).toBeInTheDocument();
     expect(screen.getByTestId('thread-row-thread-project-1')).toBeInTheDocument();
+  });
+
+  it('renders the fallback mail account instead of a pseudo-loaded shell when primary mail account is invalid', async () => {
+    mockSearch = '';
+    mockedUseJmapBootstrap.mockReturnValue({
+      data: {
+        session: {
+          ...mockSession,
+          primaryAccounts: {
+            ...mockSession.primaryAccounts,
+            mail: 'ghost-account',
+          },
+        },
+        status: 'ready',
+      },
+      isLoading: false,
+    } as never);
+
+    await renderShell();
+
+    expect(screen.getByTestId('account-switcher')).toHaveValue('primary');
+    expect(screen.getByRole('heading', { level: 2, name: 'Projects' })).toBeInTheDocument();
+    expect(screen.queryByText('载入邮箱')).not.toBeInTheDocument();
+  });
+
+  it('falls back from an invalid route account id before rendering the shell', async () => {
+    mockPathname = '/mail/inbox';
+    mockSearch = 'accountId=ghost-account';
+
+    await renderShell();
+
+    expect(screen.getByTestId('account-switcher')).toHaveValue('primary');
+    expect(screen.getByRole('heading', { level: 2, name: '收件箱' })).toBeInTheDocument();
+  });
+
+  it('keeps a valid route account id selected during shell rendering', async () => {
+    mockPathname = '/mail/inbox';
+    mockSearch = 'accountId=shared';
+
+    await renderShell();
+
+    expect(screen.getByTestId('account-switcher')).toHaveValue('shared');
+    expect(screen.getByTestId('new-mail-button')).toHaveAttribute('href', expect.stringContaining('accountId=shared'));
   });
 
   it('renders an actionable empty mailbox state', async () => {

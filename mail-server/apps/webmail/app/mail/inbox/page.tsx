@@ -8,8 +8,8 @@ export default async function InboxPage() {
   return (
     <MailShell
       eyebrow="收件箱"
-      intro="桌面端保持三栏阅读节奏，移动端则依次聚焦线程列表、阅读器与邮箱导航，始终维持同一套黑曜工作台体验。"
-      readerTitle="邮箱工作台"
+      intro="桌面端保持三栏阅读节奏，移动端依次聚焦线程列表、阅读器与系统邮箱。"
+      readerTitle="邮件"
       sectionTitle="活动邮箱"
       sessionSummary={sessionSummary}
     >

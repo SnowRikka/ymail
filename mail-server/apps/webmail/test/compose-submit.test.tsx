@@ -265,7 +265,13 @@ describe('compose-submit foundations', () => {
       request: {
         accountId: 'primary',
         create: { 'send-submission': { emailId: '#send-email', identityId: 'identity-1' } },
-        onSuccessUpdateEmail: { '#send-email': expect.any(Object) },
+        onSuccessUpdateEmail: {
+          '#send-submission': {
+            'keywords/$draft': null,
+            'mailboxIds/drafts-id': null,
+            'mailboxIds/sent-id': true,
+          },
+        },
       },
     });
   });
@@ -379,13 +385,14 @@ describe('compose-submit foundations', () => {
       return;
     }
 
-    expect(prepared.submission.create['send-submission']).toMatchObject({
-      emailId: '#send-email',
-      identityId: 'identity-1',
+    expect(prepared.submission.create).toEqual({
+      'send-submission': {
+        emailId: '#send-email',
+        identityId: 'identity-1',
+      },
     });
     expect(prepared.submission.onSuccessUpdateEmail).toEqual({
-      '#send-email': {
-        '#send-email/mailboxIds/': null,
+      '#send-submission': {
         'keywords/$draft': null,
         'mailboxIds/drafts-id': null,
         'mailboxIds/sent-id': true,

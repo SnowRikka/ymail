@@ -252,7 +252,6 @@ export function buildComposeSubmissionRequest(input: {
 
   const onSuccessUpdateEmail = input.mailboxRoleState.sentId
     ? {
-        '#send-email/mailboxIds/': null,
         [`mailboxIds/${input.mailboxRoleState.sentId}`]: true,
         ...(input.mailboxRoleState.draftsId ? { [`mailboxIds/${input.mailboxRoleState.draftsId}`]: null } : {}),
         ...(input.mailboxRoleState.draftsId ? { 'keywords/$draft': null } : {}),
@@ -268,7 +267,7 @@ export function buildComposeSubmissionRequest(input: {
         identityId: input.identity.id,
       },
     },
-    onSuccessUpdateEmail: onSuccessUpdateEmail ? { '#send-email': onSuccessUpdateEmail } : undefined,
+    onSuccessUpdateEmail: onSuccessUpdateEmail ? { '#send-submission': onSuccessUpdateEmail } : undefined,
   };
 
   return {

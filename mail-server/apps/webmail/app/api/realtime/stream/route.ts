@@ -13,6 +13,10 @@ const SSE_HEADERS = {
 
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 
+function createGracefulPollingFallbackResponse() {
+  return new Response(null, { status: 204, headers: SSE_HEADERS });
+}
+
 function createIdleStream(signal: AbortSignal) {
   const encoder = new TextEncoder();
   let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -54,7 +58,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!realtimeSession.jmapSession.capabilities.websocket.supported) {
-    return new Response(null, { status: 204, headers: SSE_HEADERS });
+    return createGracefulPollingFallbackResponse();
   }
 
   if (isPlaywrightTestSession(realtimeSession.session)) {
@@ -74,7 +78,7 @@ export async function GET(request: NextRequest) {
       signal: request.signal,
     });
   } catch {
-    return new Response('暂时无法连接邮箱实时服务。', { status: 502 });
+    return createGracefulPollingFallbackResponse();
   }
 
   if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
@@ -83,7 +87,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!upstreamResponse.ok || !upstreamResponse.body) {
-    return new Response('邮箱实时服务暂时不可用。', { status: 502 });
+    return createGracefulPollingFallbackResponse();
   }
 
   return new Response(upstreamResponse.body, {

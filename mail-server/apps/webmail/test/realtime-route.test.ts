@@ -172,7 +172,7 @@ describe('realtime-route', () => {
     expect(text).toContain('data: {"changed":["Mailbox"]}');
   });
 
-  it('clears the cookie-backed session when upstream SSE auth expires', async () => {
+  it.each([401, 403])('clears the cookie-backed session when upstream SSE auth expires with %s', async (status) => {
     const session = createAppSession({
       accountCount: 1,
       authorizationHeader: 'Basic hidden',
@@ -189,7 +189,7 @@ describe('realtime-route', () => {
         });
       }
 
-      return new Response(null, { status: 401 });
+      return new Response(null, { status });
     }));
 
     const response = await realtimeStreamGet(new NextRequest('http://localhost/api/realtime/stream', {
@@ -199,5 +199,63 @@ describe('realtime-route', () => {
     expect(response.status).toBe(401);
     expect(response.headers.get('set-cookie')).toContain(`${AUTH_COOKIE_NAME}=`);
     expect(getAppSessionById(session.id)).toBeNull();
+  });
+
+  it('returns 204 so EventSource stops reconnecting when upstream SSE transport throws', async () => {
+    const session = createAppSession({
+      accountCount: 1,
+      authorizationHeader: 'Basic hidden',
+      username: 'alice@example.com',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://mail.example.com/jmap/session') {
+        return new Response(JSON.stringify(createSessionPayload()), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      throw new Error('transport unavailable');
+    }));
+
+    const response = await realtimeStreamGet(new NextRequest('http://localhost/api/realtime/stream', {
+      headers: { cookie: `${AUTH_COOKIE_NAME}=${session.id}` },
+    }));
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(getAppSessionById(session.id)).not.toBeNull();
+  });
+
+  it('returns 204 for non-auth upstream SSE failures so polling fallback is stable', async () => {
+    const session = createAppSession({
+      accountCount: 1,
+      authorizationHeader: 'Basic hidden',
+      username: 'alice@example.com',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://mail.example.com/jmap/session') {
+        return new Response(JSON.stringify(createSessionPayload()), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      return new Response('temporarily unavailable', { status: 502 });
+    }));
+
+    const response = await realtimeStreamGet(new NextRequest('http://localhost/api/realtime/stream', {
+      headers: { cookie: `${AUTH_COOKIE_NAME}=${session.id}` },
+    }));
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(getAppSessionById(session.id)).not.toBeNull();
   });
 });

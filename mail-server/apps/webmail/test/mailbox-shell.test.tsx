@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -289,7 +289,9 @@ describe('mailbox-shell', () => {
     await renderShell();
 
     expect(screen.getByTestId('account-switcher')).toHaveValue('shared');
-    expect(screen.getByTestId('new-mail-button')).toHaveAttribute('href', expect.stringContaining('accountId=shared'));
+    fireEvent.click(screen.getByTestId('new-mail-button'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=shared'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));
   });
 
   it('renders an actionable empty mailbox state', async () => {
@@ -298,6 +300,8 @@ describe('mailbox-shell', () => {
     await renderShell();
 
     expect(screen.getByTestId('thread-empty-state')).toBeInTheDocument();
-    expect(screen.getAllByText('新建邮件').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByTestId('thread-empty-new-mail-button'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=primary'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));
   });
 });

@@ -1,10 +1,9 @@
 'use client';
 
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
 
 import { LogoutButton } from '@/components/mail/logout-button';
 import { ThreadListPanel } from '@/components/mail/thread-list-panel';
@@ -12,7 +11,7 @@ import { GlobalSearchForm } from '@/components/search/global-search-form';
 import { SearchResultsPanel } from '@/components/search/search-results-panel';
 import { RealtimeStatus } from '@/components/system/realtime-status';
 import type { SafeSessionSummary } from '@/lib/auth/types';
-import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
+import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel, toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
 import { buildSearchRouteHref, resolveSearchRouteState } from '@/lib/jmap/search';
@@ -181,6 +180,10 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
   };
   const listPaneLabel = listPaneVariant === 'search' ? '搜索结果' : '线程列表';
 
+  const openFreshCompose = () => {
+    router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
+  };
+
   const listPane = listPaneVariant === 'search'
     ? <SearchResultsPanel {...listPaneProps} />
     : (
@@ -257,15 +260,16 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
                   </label>
 
                   <div className="flex items-center gap-2 lg:justify-end">
-                    <Link
+                    <button
                       aria-label="新建邮件"
                       className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                       data-testid="new-mail-button"
-                      href={buildComposeRouteHref({ accountId: activeAccountId, intent: 'new', returnTo: currentRoute })}
+                      onClick={openFreshCompose}
+                      type="button"
                     >
                       <ComposeIcon className="h-4 w-4" />
                       新建邮件
-                    </Link>
+                    </button>
                     <LogoutButton />
                   </div>
                 </div>

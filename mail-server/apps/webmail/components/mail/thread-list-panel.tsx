@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ThreadBulkActionBar } from '@/components/actions/thread-bulk-action-bar';
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { useToast } from '@/components/system/toast-region';
-import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
+import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
 import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import { useJmapClient } from '@/lib/jmap/provider';
 import { getQueryClient } from '@/lib/query/client';
@@ -43,6 +43,10 @@ function focusThreadButton(threadId: string | null) {
 
 function isRemovalAction(action: MailActionRequest) {
   return action.type === 'archive' || action.type === 'delete' || action.type === 'move' || action.type === 'not-spam' || action.type === 'spam';
+}
+
+function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
+  return role === 'drafts' || role === 'trash';
 }
 
 export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage, topline }: ThreadListPanelProps) {
@@ -97,6 +101,11 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
   const currentRoute = buildThreadRouteHref(baseHref, { page: routeState.page, selectedThreadId });
   const rows = optimisticRows ?? threadQuery.data?.rows ?? [];
   const checkedThreadIdSet = useMemo(() => new Set(checkedThreadIds), [checkedThreadIds]);
+  const deleteOnlyRowActions = isDeleteOnlyMailboxRole(activeMailbox?.role ?? null);
+
+  const openFreshCompose = () => {
+    router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
+  };
 
   useEffect(() => {
     if (optimisticRows) {
@@ -295,12 +304,14 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
         <ThreadListMessageCard
           actions={
             <div className="flex flex-wrap gap-3">
-               <Link
+                <button
                   className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90"
-                  href={buildComposeRouteHref({ accountId: activeAccountId, intent: 'new', returnTo: currentRoute })}
+                  data-testid="thread-empty-new-mail-button"
+                  onClick={openFreshCompose}
+                  type="button"
                 >
                   新建邮件
-                </Link>
+                </button>
               <Link
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent"
                 href={baseHref}
@@ -329,36 +340,40 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
                 <ThreadRowCard
                   actions={
                     <>
-                      <button
-                        aria-label={`${row.isUnread ? '标记已读' : '标记未读'}：${row.subject}`}
-                        className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                        data-testid={`thread-row-read-${row.id}`}
-                        disabled={pendingActionLabel !== null}
-                        onClick={() => handleRowReadAction(row)}
-                        type="button"
-                      >
-                        {row.isUnread ? '已读' : '未读'}
-                      </button>
-                      <button
-                        aria-label={`${row.isFlagged ? '取消星标' : '加星'}：${row.subject}`}
-                        className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                        data-testid={`thread-row-star-${row.id}`}
-                        disabled={pendingActionLabel !== null}
-                        onClick={() => handleRowStarAction(row)}
-                        type="button"
-                      >
-                        {row.isFlagged ? '取消星标' : '加星'}
-                      </button>
-                      <button
-                        aria-label={`归档线程：${row.subject}`}
-                        className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                        data-testid={`thread-row-archive-${row.id}`}
-                        disabled={pendingActionLabel !== null || roleTargets.archiveId === null}
-                        onClick={() => handleRowArchiveAction(row)}
-                        type="button"
-                      >
-                        归档
-                      </button>
+                      {deleteOnlyRowActions ? null : (
+                        <>
+                          <button
+                            aria-label={`${row.isUnread ? '标记已读' : '标记未读'}：${row.subject}`}
+                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                            data-testid={`thread-row-read-${row.id}`}
+                            disabled={pendingActionLabel !== null}
+                            onClick={() => handleRowReadAction(row)}
+                            type="button"
+                          >
+                            {row.isUnread ? '已读' : '未读'}
+                          </button>
+                          <button
+                            aria-label={`${row.isFlagged ? '取消星标' : '加星'}：${row.subject}`}
+                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                            data-testid={`thread-row-star-${row.id}`}
+                            disabled={pendingActionLabel !== null}
+                            onClick={() => handleRowStarAction(row)}
+                            type="button"
+                          >
+                            {row.isFlagged ? '取消星标' : '加星'}
+                          </button>
+                          <button
+                            aria-label={`归档线程：${row.subject}`}
+                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                            data-testid={`thread-row-archive-${row.id}`}
+                            disabled={pendingActionLabel !== null || roleTargets.archiveId === null}
+                            onClick={() => handleRowArchiveAction(row)}
+                            type="button"
+                          >
+                            归档
+                          </button>
+                        </>
+                      )}
                       <button
                         aria-label={`删除线程：${row.subject}`}
                         className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
@@ -369,16 +384,18 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
                       >
                         删除
                       </button>
-                      <button
-                        aria-label={`标记线程为垃圾邮件：${row.subject}`}
-                        className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                        data-testid={`thread-row-spam-${row.id}`}
-                        disabled={pendingActionLabel !== null || roleTargets.junkId === null}
-                        onClick={() => handleRowSpamAction(row)}
-                        type="button"
-                      >
-                        垃圾邮件
-                      </button>
+                      {deleteOnlyRowActions ? null : (
+                        <button
+                          aria-label={`标记线程为垃圾邮件：${row.subject}`}
+                          className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                          data-testid={`thread-row-spam-${row.id}`}
+                          disabled={pendingActionLabel !== null || roleTargets.junkId === null}
+                          onClick={() => handleRowSpamAction(row)}
+                          type="button"
+                        >
+                          垃圾邮件
+                        </button>
+                      )}
                     </>
                   }
                   index={index}

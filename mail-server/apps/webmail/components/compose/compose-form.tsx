@@ -175,7 +175,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const { notify } = useToast();
   const routeState = useMemo(() => parseComposeRouteState(searchParams), [searchParams]);
   const accountId = resolveComposeAccountId(routeState.accountId, bootstrapQuery.data);
-  const draftKey = buildComposeDraftKey({ accountId, intent: routeState.intent, messageId: routeState.messageId, threadId: routeState.threadId });
+  const draftKey = buildComposeDraftKey({ accountId, draftId: routeState.draftId, intent: routeState.intent, messageId: routeState.messageId, threadId: routeState.threadId });
   const storedDraft = useComposeDraftStore((state) => state.drafts[draftKey] ?? null);
   const [formState, setFormState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);
   const [baselineState, setBaselineState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);

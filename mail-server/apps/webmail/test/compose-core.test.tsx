@@ -4,11 +4,12 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposePrefill, buildForwardSubject, buildReplySubject, parseComposeRecipients, validateComposeForm } from '@/lib/jmap/compose-core';
+import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, parseComposeRecipients, parseComposeRouteState, validateComposeForm } from '@/lib/jmap/compose-core';
 import type { ReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
 
+const LEGACY_NEW_DRAFT_KEY = 'new::primary::standalone-thread::latest-message';
 const mockPush = vi.fn();
 let mockSearchParams = new URLSearchParams('intent=new&accountId=primary');
 
@@ -135,6 +136,16 @@ describe('compose-core', () => {
     expect(buildForwardSubject('回复： 项目更新')).toBe('转发：项目更新');
   });
 
+  it('uses explicit draft ids to isolate fresh new-mail routes', () => {
+    const routeState = parseComposeRouteState(new URLSearchParams('intent=new&accountId=primary&draftId=fresh-inbox-1&returnTo=/mail/inbox'));
+
+    expect(routeState.draftId).toBe('fresh-inbox-1');
+    expect(buildComposeDraftKey(routeState)).toBe('new::primary::explicit-draft::fresh-inbox-1');
+    expect(buildComposeDraftKey({ accountId: 'primary', draftId: null, intent: 'new', messageId: null, threadId: null })).toBe(LEGACY_NEW_DRAFT_KEY);
+    expect(buildComposeRouteHref({ accountId: 'primary', draftId: 'fresh-inbox-1', intent: 'new', returnTo: '/mail/inbox' })).toContain('draftId=fresh-inbox-1');
+    expect(buildFreshComposeRouteHref({ accountId: 'primary', returnTo: '/mail/inbox' })).toMatch(/^\/mail\/compose\?intent=new&accountId=primary&draftId=fresh-/);
+  });
+
   it('builds reply-all and forward prefills from reader metadata', () => {
     const thread = createThread();
     const replyAll = buildComposePrefill({ intent: 'reply-all', messageId: 'message-1', selfEmail: 'owner@example.com', thread });
@@ -196,6 +207,34 @@ describe('compose-core', () => {
     expect(screen.getByTestId('draft-status')).toHaveTextContent(/已恢复 .* 暂存的草稿。/);
   });
 
+  it('keeps inbox fresh compose empty even when a legacy new draft exists', async () => {
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=fresh-inbox-entry');
+    useComposeDraftStore.getState().saveDraft(LEGACY_NEW_DRAFT_KEY, {
+      accountId: 'primary',
+      attachments: [{ blobId: 'blob-1', errorMessage: null, name: 'legacy-upload.pdf', size: 128, status: 'uploaded', type: 'application/pdf' }],
+      form: {
+        body: '旧正文',
+        subject: '旧主题',
+        to: 'legacy@example.com',
+      },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: null,
+      threadId: null,
+      updatedAt: Date.now(),
+    });
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue(''));
+    expect(screen.getByTestId('compose-subject')).toHaveValue('');
+    expect(screen.getByTestId('compose-body')).toHaveValue('');
+    expect(screen.getByTestId('attachment-progress')).toHaveTextContent('尚未添加附件。');
+    expect(screen.queryByText('legacy-upload.pdf')).not.toBeInTheDocument();
+    expect(screen.queryByText(/已恢复 .* 暂存的草稿。/)).not.toBeInTheDocument();
+  });
+
   it('keeps focus on subject after recipient blur autosaves a fresh compose', async () => {
     renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
 
@@ -217,7 +256,7 @@ describe('compose-core', () => {
   });
 
   it('lets restored drafts continue editing away from compose-to after blur save', async () => {
-    useComposeDraftStore.getState().saveDraft('new::primary::standalone-thread::latest-message', {
+    useComposeDraftStore.getState().saveDraft(LEGACY_NEW_DRAFT_KEY, {
       accountId: 'primary',
       attachments: [],
       form: {

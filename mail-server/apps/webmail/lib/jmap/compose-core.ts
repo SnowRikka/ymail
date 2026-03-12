@@ -57,6 +57,7 @@ export type ComposeValidationResult =
 
 export interface ComposeRouteState {
   readonly accountId: string | null;
+  readonly draftId: string | null;
   readonly intent: ComposeIntent;
   readonly messageId: string | null;
   readonly returnTo: string | null;
@@ -224,6 +225,11 @@ function normalizeSubjectBase(value: string | null | undefined) {
   return base.length > 0 ? base : '（无主题）';
 }
 
+function normalizeComposeDraftId(value: string | null) {
+  const draftId = value?.trim() ?? '';
+  return draftId.length > 0 ? draftId : null;
+}
+
 function quotePlainText(value: string) {
   return value
     .replace(/\r\n/g, '\n')
@@ -268,6 +274,7 @@ export function parseComposeRouteState(searchParams: URLSearchParams): ComposeRo
 
   return {
     accountId: searchParams.get('accountId'),
+    draftId: normalizeComposeDraftId(searchParams.get('draftId')),
     intent: parseComposeIntent(searchParams.get('intent')),
     messageId: searchParams.get('messageId'),
     returnTo: returnTo && returnTo.startsWith('/mail/') ? returnTo : null,
@@ -275,7 +282,26 @@ export function parseComposeRouteState(searchParams: URLSearchParams): ComposeRo
   };
 }
 
-export function buildComposeDraftKey(routeState: Pick<ComposeRouteState, 'accountId' | 'intent' | 'messageId' | 'threadId'>) {
+export function createFreshComposeDraftId() {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+
+  if (randomUuid) {
+    return `fresh-${randomUuid}`;
+  }
+
+  return `fresh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function buildComposeDraftKey(routeState: Pick<ComposeRouteState, 'accountId' | 'draftId' | 'intent' | 'messageId' | 'threadId'>) {
+  if (routeState.intent === 'new' && routeState.draftId) {
+    return [
+      routeState.intent,
+      routeState.accountId ?? 'default-account',
+      'explicit-draft',
+      routeState.draftId,
+    ].join('::');
+  }
+
   return [
     routeState.intent,
     routeState.accountId ?? 'default-account',
@@ -300,11 +326,24 @@ export function buildComposeRouteHref(routeState: Partial<ComposeRouteState> & P
     url.searchParams.set('messageId', routeState.messageId);
   }
 
+  if (routeState.intent === 'new' && routeState.draftId) {
+    url.searchParams.set('draftId', routeState.draftId);
+  }
+
   if (routeState.returnTo && routeState.returnTo.startsWith('/mail/')) {
     url.searchParams.set('returnTo', routeState.returnTo);
   }
 
   return `${url.pathname}${url.search}`;
+}
+
+export function buildFreshComposeRouteHref(routeState: Pick<ComposeRouteState, 'accountId' | 'returnTo'>) {
+  return buildComposeRouteHref({
+    accountId: routeState.accountId,
+    draftId: createFreshComposeDraftId(),
+    intent: 'new',
+    returnTo: routeState.returnTo,
+  });
 }
 
 export function areComposeFormStatesEqual(left: ComposeFormState, right: ComposeFormState) {

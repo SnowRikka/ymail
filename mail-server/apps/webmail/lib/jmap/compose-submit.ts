@@ -1,4 +1,5 @@
 import { parseComposeRecipients, type ComposeFormState, type ComposeRecipient, type ComposeStoredAttachment } from '@/lib/jmap/compose-core';
+import { createMethodCall, isJmapMethodResult } from '@/lib/jmap/methods';
 import { buildBlobDownloadUrl } from '@/lib/jmap/session';
 import type { JmapClient, JmapEmailAddress, JmapEmailCreateObject, JmapEmailSubmissionSetRequest, JmapExecutionError, JmapIdentityObject, JmapMailboxObject, JmapMethodFailure, JmapSetInvocationError } from '@/lib/jmap/types';
 
@@ -291,43 +292,52 @@ export async function submitComposeMessage(input: {
     return { failure: prepared.failure, kind: 'failure' };
   }
 
-  const emailResult = await input.client.email.set({
-    accountId: input.accountId,
-    create: {
-      'send-email': prepared.emailCreate,
-    },
-  });
+  const batchResult = await input.client.call([
+    createMethodCall('Email/set', {
+      accountId: input.accountId,
+      create: {
+        'send-email': prepared.emailCreate,
+      },
+    }, 'send-email'),
+    createMethodCall('EmailSubmission/set', {
+      accountId: input.accountId,
+      ...prepared.submission,
+    }, 'send-submission'),
+  ]);
 
-  if (!emailResult.ok) {
-    return { failure: classifyComposeExecutionError(emailResult.error, '邮件创建失败。'), kind: 'failure' };
+  if (!batchResult.ok) {
+    return { failure: classifyComposeExecutionError(batchResult.error, '邮件发送失败。'), kind: 'failure' };
   }
 
-  if (emailResult.result.kind !== 'success') {
-    return { failure: classifyComposeMethodFailure(emailResult.result, '邮件创建失败。'), kind: 'failure' };
+  const emailMethodResult = batchResult.responses.find((response) => response.callId === 'send-email');
+
+  if (!emailMethodResult || !isJmapMethodResult(emailMethodResult, 'Email/set')) {
+    return { failure: { kind: 'network-failure', message: '邮件创建响应缺失。' }, kind: 'failure' };
   }
 
-  const createdEmail = emailResult.result.response.created?.['send-email'];
-  const emailCreateError = emailResult.result.response.notCreated?.['send-email'];
+  if (emailMethodResult.kind !== 'success') {
+    return { failure: classifyComposeMethodFailure(emailMethodResult, '邮件创建失败。'), kind: 'failure' };
+  }
+
+  const createdEmail = emailMethodResult.response.created?.['send-email'];
+  const emailCreateError = emailMethodResult.response.notCreated?.['send-email'];
 
   if (!createdEmail?.id) {
     return { failure: readInvocationError(emailCreateError, '邮件创建失败。'), kind: 'failure' };
   }
 
-  const submissionResult = await input.client.submission.set({
-    accountId: input.accountId,
-    ...prepared.submission,
-  });
+  const submissionMethodResult = batchResult.responses.find((response) => response.callId === 'send-submission');
 
-  if (!submissionResult.ok) {
-    return { failure: classifyComposeExecutionError(submissionResult.error, '邮件提交失败。'), kind: 'failure' };
+  if (!submissionMethodResult || !isJmapMethodResult(submissionMethodResult, 'EmailSubmission/set')) {
+    return { failure: { kind: 'network-failure', message: '邮件提交响应缺失。' }, kind: 'failure' };
   }
 
-  if (submissionResult.result.kind !== 'success') {
-    return { failure: classifyComposeMethodFailure(submissionResult.result, '邮件提交失败。'), kind: 'failure' };
+  if (submissionMethodResult.kind !== 'success') {
+    return { failure: classifyComposeMethodFailure(submissionMethodResult, '邮件提交失败。'), kind: 'failure' };
   }
 
-  const createdSubmission = submissionResult.result.response.created?.['send-submission'];
-  const submissionCreateError = submissionResult.result.response.notCreated?.['send-submission'];
+  const createdSubmission = submissionMethodResult.response.created?.['send-submission'];
+  const submissionCreateError = submissionMethodResult.response.notCreated?.['send-submission'];
 
   if (!createdSubmission) {
     return { failure: readInvocationError(submissionCreateError, '邮件提交失败。'), kind: 'failure' };

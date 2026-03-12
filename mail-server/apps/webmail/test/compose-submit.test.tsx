@@ -4,7 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildUploadProxyPath, classifyComposeExecutionError, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
+import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
 
@@ -207,5 +207,189 @@ describe('compose-submit foundations', () => {
     expect(stored).toEqual([
       { blobId: 'blob-1', errorMessage: null, name: 'ok.txt', size: 2, status: 'uploaded', type: 'text/plain' },
     ]);
+  });
+
+  it('submits send flow in a single batch and returns created ids on success', async () => {
+    const identity = toComposeIdentityOptions([{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], textSignature: 'Regards' }])[0]!;
+    const call = vi.fn().mockResolvedValue({
+      createdIds: { 'send-email': 'email-1', 'send-submission': 'submission-1' },
+      ok: true,
+      responses: [
+        {
+          accountId: 'primary',
+          callId: 'send-email',
+          kind: 'success',
+          name: 'Email/set',
+          response: { accountId: 'primary', created: { 'send-email': { id: 'email-1' } }, newState: 'email-state' },
+        },
+        {
+          accountId: 'primary',
+          callId: 'send-submission',
+          kind: 'success',
+          name: 'EmailSubmission/set',
+          response: {
+            accountId: 'primary',
+            created: { 'send-submission': { emailId: 'email-1', id: 'submission-1', identityId: 'identity-1' } },
+            newState: 'submission-state',
+          },
+        },
+      ],
+      session: {},
+      sessionState: 'session-state',
+    });
+
+    const result = await submitComposeMessage({
+      accountId: 'primary',
+      attachments: [],
+      client: { call } as never,
+      form: { body: 'Hello', subject: 'Subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(result).toEqual({ emailId: 'email-1', kind: 'success', submissionId: 'submission-1' });
+    expect(call).toHaveBeenCalledTimes(1);
+
+    const calls = call.mock.calls[0]?.[0];
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      accountId: 'primary',
+      callId: 'send-email',
+      name: 'Email/set',
+      request: { accountId: 'primary', create: { 'send-email': expect.any(Object) } },
+    });
+    expect(calls[1]).toMatchObject({
+      accountId: 'primary',
+      callId: 'send-submission',
+      name: 'EmailSubmission/set',
+      request: {
+        accountId: 'primary',
+        create: { 'send-submission': { emailId: '#send-email', identityId: 'identity-1' } },
+        onSuccessUpdateEmail: { '#send-email': expect.any(Object) },
+      },
+    });
+  });
+
+  it('surfaces submission upstream validation failures from the batched send flow', async () => {
+    const identity = toComposeIdentityOptions([{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], textSignature: 'Regards' }])[0]!;
+    const call = vi.fn().mockResolvedValue({
+      createdIds: { 'send-email': 'email-1' },
+      ok: true,
+      responses: [
+        {
+          accountId: 'primary',
+          callId: 'send-email',
+          kind: 'success',
+          name: 'Email/set',
+          response: { accountId: 'primary', created: { 'send-email': { id: 'email-1' } }, newState: 'email-state' },
+        },
+        {
+          accountId: 'primary',
+          callId: 'send-submission',
+          kind: 'success',
+          name: 'EmailSubmission/set',
+          response: {
+            accountId: 'primary',
+            newState: 'submission-state',
+            notCreated: {
+              'send-submission': {
+                description: 'Invalid reference to non-existing object "send-email" from "send-submission"',
+                type: 'invalidArguments',
+              },
+            },
+          },
+        },
+      ],
+      session: {},
+      sessionState: 'session-state',
+    });
+
+    const result = await submitComposeMessage({
+      accountId: 'primary',
+      attachments: [],
+      client: { call } as never,
+      form: { body: 'Hello', subject: 'Subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(result).toEqual({
+      failure: {
+        kind: 'upstream-validation',
+        message: 'Invalid reference to non-existing object "send-email" from "send-submission"',
+      },
+      kind: 'failure',
+    });
+  });
+
+  it('maps forbidden submission method errors to auth-expired during send', async () => {
+    const identity = toComposeIdentityOptions([{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], textSignature: 'Regards' }])[0]!;
+    const call = vi.fn().mockResolvedValue({
+      createdIds: { 'send-email': 'email-1' },
+      ok: true,
+      responses: [
+        {
+          accountId: 'primary',
+          callId: 'send-email',
+          kind: 'success',
+          name: 'Email/set',
+          response: { accountId: 'primary', created: { 'send-email': { id: 'email-1' } }, newState: 'email-state' },
+        },
+        {
+          accountId: 'primary',
+          callId: 'send-submission',
+          error: { description: 'forbidden', type: 'forbidden' },
+          kind: 'method-error',
+          name: 'EmailSubmission/set',
+        },
+      ],
+      session: {},
+      sessionState: 'session-state',
+    });
+
+    const result = await submitComposeMessage({
+      accountId: 'primary',
+      attachments: [],
+      client: { call } as never,
+      form: { body: 'Hello', subject: 'Subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(result).toEqual({
+      failure: {
+        kind: 'auth-expired',
+        message: 'forbidden',
+      },
+      kind: 'failure',
+    });
+  });
+
+  it('keeps the request builder aligned with batched #creation-id send semantics', () => {
+    const identity = toComposeIdentityOptions([{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], textSignature: 'Regards' }])[0]!;
+    const prepared = buildComposeSubmissionRequest({
+      attachments: [],
+      form: { body: 'Hello', subject: 'Subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) {
+      return;
+    }
+
+    expect(prepared.submission.create['send-submission']).toMatchObject({
+      emailId: '#send-email',
+      identityId: 'identity-1',
+    });
+    expect(prepared.submission.onSuccessUpdateEmail).toEqual({
+      '#send-email': {
+        '#send-email/mailboxIds/': null,
+        'keywords/$draft': null,
+        'mailboxIds/drafts-id': null,
+        'mailboxIds/sent-id': true,
+      },
+    });
   });
 });

@@ -128,6 +128,66 @@ const readerThread = {
 const composeIdentities = [{ bcc: [], email: 'owner@example.com', id: 'identity-1', label: 'Owner <owner@example.com>', name: 'Owner', replyTo: [], textSignature: 'Regards' }] as const;
 const composeMailboxes = [{ id: 'drafts-id', name: 'Drafts', role: 'drafts' }, { id: 'sent-id', name: 'Sent', role: 'sent' }] as const;
 
+function createComposeClientMock(): JmapClient {
+  return {
+    email: {
+      get: vi.fn(),
+      query: vi.fn(),
+      queryChanges: vi.fn(),
+      set: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          accountId: 'primary',
+          callId: 'draft-create',
+          kind: 'success',
+          name: 'Email/set',
+          response: {
+            accountId: 'primary',
+            created: { 'draft-email': { id: 'draft-1' } },
+            newState: 'email-state',
+          },
+        },
+        session: {},
+      }),
+    },
+    identity: {
+      get: vi.fn(),
+    },
+    mailbox: {
+      changes: vi.fn(),
+      get: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: { accountId: 'primary', list: composeMailboxes, state: 'mailbox-state' },
+        },
+      }),
+      query: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: { accountId: 'primary', canCalculateChanges: true, ids: ['drafts-id', 'sent-id'], position: 0, queryState: 'mailbox-query' },
+        },
+      }),
+    },
+    blob: {
+      downloadAccess: vi.fn(),
+      uploadAccess: vi.fn(),
+    },
+    bootstrap: vi.fn(),
+    call: vi.fn(),
+    reset: vi.fn(),
+    selectAccount: vi.fn(),
+    submission: {
+      set: vi.fn(),
+    },
+    thread: {
+      changes: vi.fn(),
+      get: vi.fn(),
+    },
+  } as never;
+}
+
 function installQueryMocks() {
   mockedUseQuery.mockImplementation((options) => {
     const queryKey = Array.isArray(options.queryKey) ? options.queryKey : [];
@@ -202,7 +262,7 @@ beforeEach(() => {
   mockPush.mockReset();
   mockRefresh.mockReset();
   mockReplace.mockReset();
-  mockedUseJmapClient.mockReturnValue({} as JmapClient);
+  mockedUseJmapClient.mockReturnValue(createComposeClientMock());
   mockedUseJmapBootstrap.mockReturnValue({
     data: {
       session: {
@@ -269,7 +329,7 @@ describe('accessibility', () => {
     fireEvent.change(toField, { target: { value: 'alice@example.com' } });
     fireEvent.keyDown(screen.getByTestId('compose-form'), { ctrlKey: true, key: 's' });
 
-    expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary');
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
   });
 
   it('exposes reader action and attachment labels for assistive tech', () => {

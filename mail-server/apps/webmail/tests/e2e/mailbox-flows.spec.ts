@@ -42,7 +42,7 @@ test('search flow finds a known inbox subject and opens the matching result', as
   await saveEvidence(page, 'playwright-search-flow.png');
 });
 
-test('compose reply flow prefills the draft and returns to the reader after saving', async ({ context, page }) => {
+test('compose reply flow keeps the editable body separate from the quoted original block', async ({ context, page }) => {
   await installMockJmapApi(page);
   await loginAndOpenInbox(page, context.request);
 
@@ -58,19 +58,14 @@ test('compose reply flow prefills the draft and returns to the reader after savi
   await expect(page.getByTestId('compose-subject')).toHaveValue(createSubjectMatcher(firstThread.subject));
 
   const composeBody = page.getByTestId('compose-body');
-  const quotedBody = await composeBody.inputValue();
+  const quotedBody = page.getByTestId('compose-quoted-content');
 
-  expect(quotedBody.length).toBeGreaterThan(0);
+  await expect(composeBody).toHaveValue('');
+  await expect(quotedBody).toContainText('-------- 原始邮件 --------');
 
-  await composeBody.fill(`Playwright reply draft\n\n${quotedBody}`);
-
-  await Promise.all([
-    page.waitForURL(new RegExp(`threadId=${firstThread.threadId}`)),
-    page.getByTestId('compose-save-close').click(),
-  ]);
-
-  await expect(page.getByTestId('reader-pane')).toContainText(firstThread.subject);
-  await expect(page.getByTestId('reader-reply')).toBeVisible();
+  await composeBody.fill('Playwright reply draft');
+  await expect(composeBody).toHaveValue('Playwright reply draft');
+  await expect(quotedBody).toContainText('Please send feedback today if possible.');
 
   await saveEvidence(page, 'playwright-reply-flow.png');
 });

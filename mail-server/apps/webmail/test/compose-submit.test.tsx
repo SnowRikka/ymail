@@ -1,10 +1,11 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
+import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, destroyComposeDraft, persistComposeDraft, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
+import { queryReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
 
@@ -26,16 +27,119 @@ vi.mock('@/components/system/toast-region', () => ({
   useToast: () => ({ notify: vi.fn() }),
 }));
 
+vi.mock('@/lib/jmap/message-reader', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/jmap/message-reader')>('@/lib/jmap/message-reader');
+
+  return {
+    ...actual,
+    queryReaderThread: vi.fn(),
+  };
+});
+
 const mockedUseJmapBootstrap = vi.mocked(useJmapBootstrap);
 const mockedUseJmapClient = vi.mocked(useJmapClient);
+const mockedQueryReaderThread = vi.mocked(queryReaderThread);
 
 function renderWithQueryClient(node: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { gcTime: 0, retry: false } } });
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
+function createEmailSetMock() {
+  let createdCount = 0;
+
+  return vi.fn().mockImplementation(async (request: { create?: Record<string, unknown>; destroy?: readonly string[]; update?: Record<string, unknown> }) => {
+    if (request.create?.['draft-email']) {
+      createdCount += 1;
+
+      return {
+        ok: true,
+        result: {
+          accountId: 'primary',
+          callId: 'draft-create',
+          kind: 'success',
+          name: 'Email/set',
+          response: {
+            accountId: 'primary',
+            created: { 'draft-email': { id: `draft-${createdCount}` } },
+            newState: `email-state-${createdCount}`,
+          },
+        },
+        session: {},
+      };
+    }
+
+    if (request.update) {
+      const draftEmailId = Object.keys(request.update)[0] ?? 'draft-1';
+
+      return {
+        ok: true,
+        result: {
+          accountId: 'primary',
+          callId: 'draft-update',
+          kind: 'success',
+          name: 'Email/set',
+          response: {
+            accountId: 'primary',
+            newState: `email-state-${createdCount + 1}`,
+            updated: { [draftEmailId]: null },
+          },
+        },
+        session: {},
+      };
+    }
+
+    const draftEmailId = request.destroy?.[0] ?? 'draft-1';
+
+    return {
+      ok: true,
+      result: {
+        accountId: 'primary',
+        callId: 'draft-destroy',
+        kind: 'success',
+        name: 'Email/set',
+        response: {
+          accountId: 'primary',
+          destroyed: [draftEmailId],
+          newState: `email-state-${createdCount + 1}`,
+        },
+      },
+      session: {},
+    };
+  });
+}
+
 function createClientMock() {
   return {
+    call: vi.fn().mockResolvedValue({
+      createdIds: { 'send-email': 'email-1', 'send-submission': 'submission-1' },
+      ok: true,
+      responses: [
+        {
+          accountId: 'primary',
+          callId: 'send-email',
+          kind: 'success',
+          name: 'Email/set',
+          response: { accountId: 'primary', created: { 'send-email': { id: 'email-1' } }, newState: 'email-state' },
+        },
+        {
+          accountId: 'primary',
+          callId: 'send-submission',
+          kind: 'success',
+          name: 'EmailSubmission/set',
+          response: {
+            accountId: 'primary',
+            created: { 'send-submission': { emailId: 'email-1', id: 'submission-1', identityId: 'identity-1' } },
+            newState: 'submission-state',
+          },
+        },
+      ],
+      session: {},
+      sessionState: 'session-state',
+    }),
+    email: {
+      set: createEmailSetMock(),
+    },
     identity: {
       get: vi.fn().mockResolvedValue({
         ok: true,
@@ -65,6 +169,43 @@ function createClientMock() {
   };
 }
 
+function createReplyThread() {
+  return {
+    accountId: 'primary',
+    emailIds: ['message-1'],
+    id: 'thread-1',
+    isFlagged: false,
+    isUnread: true,
+    mailboxIds: { inbox: true },
+    messageCount: 1,
+    messages: [
+      {
+        attachments: [],
+        bcc: [],
+        body: {
+          html: null,
+          plainText: '第一行\n第二行',
+        },
+        cc: [{ email: 'team@example.com', label: 'Team', name: 'Team' }],
+        from: [{ email: 'alice@example.com', label: 'Alice', name: 'Alice' }],
+        id: 'message-1',
+        isFlagged: false,
+        isUnread: true,
+        mailboxIds: { inbox: true },
+        preview: '第一行',
+        receivedAt: '2026-03-10T10:00:00.000Z',
+        replyTo: [{ email: 'reply@example.com', label: 'Reply Desk', name: 'Reply Desk' }],
+        sender: [],
+        sentAt: '2026-03-10T10:00:00.000Z',
+        subject: '项目更新',
+        threadId: 'thread-1',
+        to: [{ email: 'owner@example.com', label: 'Owner', name: 'Owner' }],
+      },
+    ],
+    subject: '项目更新',
+  } as const;
+}
+
 beforeEach(() => {
   mockPush.mockReset();
   mockSearchParams = new URLSearchParams('intent=new&accountId=primary');
@@ -72,6 +213,8 @@ beforeEach(() => {
   useComposeDraftStore.setState({ drafts: {} });
   window.localStorage.removeItem(COMPOSE_DRAFT_STORAGE_KEY);
 
+  mockedQueryReaderThread.mockReset();
+  mockedQueryReaderThread.mockResolvedValue(createReplyThread());
   mockedUseJmapClient.mockReturnValue(createClientMock() as never);
   mockedUseJmapBootstrap.mockReturnValue({
     data: {
@@ -207,6 +350,203 @@ describe('compose-submit foundations', () => {
     expect(stored).toEqual([
       { blobId: 'blob-1', errorMessage: null, name: 'ok.txt', size: 2, status: 'uploaded', type: 'text/plain' },
     ]);
+  });
+
+  it('persists drafts through Email/set create-update-destroy helpers', async () => {
+    const identity = toComposeIdentityOptions([{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], textSignature: 'Regards' }])[0]!;
+    const set = createEmailSetMock();
+
+    const created = await persistComposeDraft({
+      accountId: 'primary',
+      attachments: [],
+      client: { email: { set } } as never,
+      form: { body: 'Draft body', subject: 'Draft subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(created).toEqual({ draftEmailId: 'draft-1', kind: 'success' });
+    expect(set).toHaveBeenNthCalledWith(1, {
+      accountId: 'primary',
+      create: {
+        'draft-email': expect.objectContaining({
+          bodyValues: { 'text-part': { value: 'Draft body\n\n-- \nRegards' } },
+          keywords: { '$draft': true },
+          mailboxIds: { 'drafts-id': true },
+          subject: 'Draft subject',
+        }),
+      },
+      update: undefined,
+    });
+
+    const updated = await persistComposeDraft({
+      accountId: 'primary',
+      attachments: [],
+      client: { email: { set } } as never,
+      draftEmailId: 'draft-1',
+      form: { body: 'Updated draft body', subject: 'Updated draft subject', to: 'friend@example.com' },
+      identity,
+      mailboxRoleState: { draftsId: 'drafts-id', fallbackId: 'drafts-id', sentId: 'sent-id' },
+    });
+
+    expect(updated).toEqual({ draftEmailId: 'draft-1', kind: 'success' });
+    expect(set).toHaveBeenNthCalledWith(2, {
+      accountId: 'primary',
+      create: undefined,
+      update: {
+        'draft-1': expect.objectContaining({
+          bodyValues: { 'text-part': { value: 'Updated draft body\n\n-- \nRegards' } },
+          keywords: { '$draft': true },
+          mailboxIds: { 'drafts-id': true },
+          subject: 'Updated draft subject',
+        }),
+      },
+    });
+
+    await expect(destroyComposeDraft({ accountId: 'primary', client: { email: { set } } as never, draftEmailId: 'draft-1' })).resolves.toEqual({ kind: 'success' });
+    expect(set).toHaveBeenNthCalledWith(3, {
+      accountId: 'primary',
+      destroy: ['draft-1'],
+    });
+  });
+
+  it('save-close persists a server draft before closing compose', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    fireEvent.change(await screen.findByTestId('compose-subject'), { target: { value: '服务器草稿' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      create: {
+        'draft-email': expect.objectContaining({
+          keywords: { '$draft': true },
+          mailboxIds: { 'drafts-id': true },
+          subject: '服务器草稿',
+        }),
+      },
+      update: undefined,
+    }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
+    expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']?.serverDraftId).toBe('draft-1');
+  });
+
+  it('save-close keeps quoted reply read-only locally while persisting the combined body remotely', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=reply&accountId=primary&threadId=thread-1&messageId=message-1');
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    fireEvent.change(await screen.findByTestId('compose-body'), { target: { value: '只编辑这一段回复' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      create: {
+        'draft-email': expect.objectContaining({
+          bodyValues: {
+            'text-part': expect.objectContaining({
+              value: expect.stringContaining('只编辑这一段回复\n\n-------- 原始邮件 --------'),
+            }),
+          },
+          keywords: { '$draft': true },
+          mailboxIds: { 'drafts-id': true },
+        }),
+      },
+      update: undefined,
+    }));
+
+    const storedDraft = useComposeDraftStore.getState().drafts['reply::primary::thread-1::message-1'];
+    expect(storedDraft?.form.body).toBe('只编辑这一段回复');
+    expect(storedDraft?.quoted?.body).toContain('-------- 原始邮件 --------');
+  });
+
+  it('repeated save-close updates the existing server draft when serverDraftId is already known', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    fireEvent.change(await screen.findByTestId('compose-subject'), { target: { value: '第一次保存' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']?.serverDraftId).toBe('draft-1'));
+
+    fireEvent.change(screen.getByTestId('compose-subject'), { target: { value: '更新后的主题' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      create: undefined,
+      update: {
+        'draft-1': expect.objectContaining({
+          keywords: { '$draft': true },
+          mailboxIds: { 'drafts-id': true },
+          subject: '更新后的主题',
+        }),
+      },
+    }));
+    expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']?.serverDraftId).toBe('draft-1');
+  });
+
+  it('empty save-close destroys an existing server draft and clears the local record', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    useComposeDraftStore.getState().saveDraft('new::primary::standalone-thread::latest-message', {
+      accountId: 'primary',
+      attachments: [],
+      form: { body: '', subject: '待删除草稿', to: '' },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: null,
+      serverDraftId: 'draft-7',
+      threadId: null,
+      updatedAt: Date.now(),
+    });
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    fireEvent.change(await screen.findByTestId('compose-subject'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      destroy: ['draft-7'],
+    }));
+    expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']).toBeUndefined();
+  });
+
+  it('persists unsaved compose state to server when navigating away', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+
+    const view = renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+    fireEvent.change(await screen.findByTestId('compose-body'), { target: { value: '离开前保存' } });
+
+    view.unmount();
+
+    await waitFor(() => {
+      const requests = client.email.set.mock.calls.map(([request]) => request) as Array<{
+        accountId: string;
+        create?: Record<string, { bodyValues?: { 'text-part'?: { value?: string } }; keywords?: { '$draft'?: boolean }; mailboxIds?: { 'drafts-id'?: boolean }; subject?: string }>;
+        update?: Record<string, { bodyValues?: { 'text-part'?: { value?: string } }; keywords?: { '$draft'?: boolean }; mailboxIds?: { 'drafts-id'?: boolean }; subject?: string }>;
+      }>;
+
+      expect(requests.some((request) => {
+        const draftPayload = request.create?.['draft-email'] ?? Object.values(request.update ?? {})[0];
+        return request.accountId === 'primary'
+          && draftPayload?.keywords?.['$draft'] === true
+          && draftPayload?.mailboxIds?.['drafts-id'] === true
+          && draftPayload?.subject === ''
+          && typeof draftPayload?.bodyValues?.['text-part']?.value === 'string'
+          && draftPayload.bodyValues['text-part']?.value.includes('离开前保存');
+      })).toBe(true);
+    });
   });
 
   it('submits send flow in a single batch and returns created ids on success', async () => {
@@ -398,5 +738,26 @@ describe('compose-submit foundations', () => {
         'mailboxIds/sent-id': true,
       },
     });
+  });
+
+  it('send flow submits the editable reply plus the read-only quote as one final body', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=reply&accountId=primary&threadId=thread-1&messageId=message-1');
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    fireEvent.change(await screen.findByTestId('compose-body'), { target: { value: '发送时也要拼回引用' } });
+    fireEvent.click(screen.getByTestId('compose-send'));
+
+    await waitFor(() => expect(client.call).toHaveBeenCalledTimes(1));
+
+    const sendBatch = client.call.mock.calls[0]?.[0] as Array<{
+      request: { create?: { 'send-email'?: { bodyValues?: { 'text-part'?: { value?: string } } } } };
+    }>;
+    const sendBody = sendBatch[0]?.request.create?.['send-email']?.bodyValues?.['text-part']?.value;
+
+    expect(sendBody).toContain('发送时也要拼回引用\n\n-------- 原始邮件 --------');
+    expect(sendBody).toContain('> 第一行');
   });
 });

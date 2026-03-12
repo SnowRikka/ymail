@@ -53,6 +53,14 @@ export type ComposeSubmissionResult =
   | { readonly emailId: string; readonly kind: 'success'; readonly submissionId: string | null }
   | { readonly failure: ComposeSubmissionFailure; readonly kind: 'failure' };
 
+export type ComposeDraftPersistenceResult =
+  | { readonly draftEmailId: string; readonly kind: 'success' }
+  | { readonly failure: ComposeSubmissionFailure; readonly kind: 'failure' };
+
+export type ComposeDraftDeletionResult =
+  | { readonly kind: 'success' }
+  | { readonly failure: ComposeSubmissionFailure; readonly kind: 'failure' };
+
 export interface ComposeUploadResponse {
   readonly accountId: string;
   readonly blobId: string;
@@ -275,6 +283,128 @@ export function buildComposeSubmissionRequest(input: {
     ok: true as const,
     submission,
   };
+}
+
+function buildDraftEmailObject(input: {
+  readonly attachments: readonly ComposeAttachmentRecord[];
+  readonly form: ComposeFormState;
+  readonly identity: ComposeIdentityOption | null;
+  readonly mailboxRoleState: ComposeMailboxRoleState;
+}) {
+  const draftsMailboxId = input.mailboxRoleState.draftsId;
+
+  if (!draftsMailboxId) {
+    return {
+      failure: { kind: 'upstream-validation', message: '当前账号缺少 Drafts 邮箱，无法保存草稿。' } satisfies ComposeSubmissionFailure,
+      ok: false as const,
+    };
+  }
+
+  const parsedRecipients = parseComposeRecipients(input.form.to);
+  const textBody = input.identity?.textSignature && !input.form.body.includes(input.identity.textSignature)
+    ? `${input.form.body}\n\n-- \n${input.identity.textSignature}`
+    : input.form.body;
+  const email = {
+    attachments: input.attachments
+      .filter((attachment) => attachment.blobId)
+      .map((attachment) => ({
+        blobId: attachment.blobId ?? undefined,
+        disposition: 'attachment',
+        name: attachment.name,
+        size: attachment.size,
+        type: attachment.type ?? 'application/octet-stream',
+      })),
+    bcc: input.identity && input.identity.bcc.length > 0 ? input.identity.bcc : undefined,
+    bodyValues: {
+      'text-part': {
+        value: textBody,
+      },
+    },
+    from: input.identity ? [{ email: input.identity.email, name: input.identity.name }] : undefined,
+    keywords: { '$draft': true },
+    mailboxIds: { [draftsMailboxId]: true },
+    replyTo: input.identity && input.identity.replyTo.length > 0 ? input.identity.replyTo : undefined,
+    subject: input.form.subject,
+    textBody: [{ partId: 'text-part', type: 'text/plain' }],
+    to: parsedRecipients.recipients.map(toJmapAddress),
+  } satisfies JmapEmailCreateObject;
+
+  return {
+    email,
+    ok: true as const,
+  };
+}
+
+export async function persistComposeDraft(input: {
+  readonly accountId: string;
+  readonly attachments: readonly ComposeAttachmentRecord[];
+  readonly client: JmapClient;
+  readonly draftEmailId?: string | null;
+  readonly form: ComposeFormState;
+  readonly identity: ComposeIdentityOption | null;
+  readonly mailboxRoleState: ComposeMailboxRoleState;
+}): Promise<ComposeDraftPersistenceResult> {
+  const prepared = buildDraftEmailObject(input);
+
+  if (!prepared.ok) {
+    return { failure: prepared.failure, kind: 'failure' };
+  }
+
+  const result = await input.client.email.set({
+    accountId: input.accountId,
+    create: input.draftEmailId ? undefined : { 'draft-email': prepared.email },
+    update: input.draftEmailId ? { [input.draftEmailId]: prepared.email } : undefined,
+  });
+
+  if (!result.ok) {
+    return { failure: classifyComposeExecutionError(result.error, '草稿保存失败。'), kind: 'failure' };
+  }
+
+  if (result.result.kind !== 'success') {
+    return { failure: classifyComposeMethodFailure(result.result, '草稿保存失败。'), kind: 'failure' };
+  }
+
+  if (!input.draftEmailId) {
+    const createdDraft = result.result.response.created?.['draft-email'];
+    const createError = result.result.response.notCreated?.['draft-email'];
+
+    if (!createdDraft?.id) {
+      return { failure: readInvocationError(createError, '草稿创建失败。'), kind: 'failure' };
+    }
+
+    return { draftEmailId: createdDraft.id, kind: 'success' };
+  }
+
+  if (result.result.response.notUpdated?.[input.draftEmailId]) {
+    return { failure: readInvocationError(result.result.response.notUpdated[input.draftEmailId], '草稿更新失败。'), kind: 'failure' };
+  }
+
+  return { draftEmailId: input.draftEmailId, kind: 'success' };
+}
+
+export async function destroyComposeDraft(input: {
+  readonly accountId: string;
+  readonly client: JmapClient;
+  readonly draftEmailId: string;
+}): Promise<ComposeDraftDeletionResult> {
+  const result = await input.client.email.set({
+    accountId: input.accountId,
+    destroy: [input.draftEmailId],
+  });
+
+  if (!result.ok) {
+    return { failure: classifyComposeExecutionError(result.error, '草稿删除失败。'), kind: 'failure' };
+  }
+
+  if (result.result.kind !== 'success') {
+    return { failure: classifyComposeMethodFailure(result.result, '草稿删除失败。'), kind: 'failure' };
+  }
+
+  if (result.result.response.notDestroyed?.[input.draftEmailId]) {
+    return { failure: readInvocationError(result.result.response.notDestroyed[input.draftEmailId], '草稿删除失败。'), kind: 'failure' };
+  }
+
+  return { kind: 'success' };
 }
 
 export async function submitComposeMessage(input: {

@@ -46,7 +46,7 @@ function isRemovalAction(action: MailActionRequest) {
 }
 
 function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
-  return role === 'drafts' || role === 'trash';
+  return role === 'drafts' || role === 'sent' || role === 'trash';
 }
 
 export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage, topline }: ThreadListPanelProps) {
@@ -330,6 +330,7 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
         <div className="mt-3 space-y-3">
           <ThreadBulkActionBar
             archiveMailboxId={roleTargets.archiveId}
+            currentMailboxRole={activeMailbox?.role ?? null}
             disabled={pendingActionLabel !== null}
             onAction={handleBulkAction}
             selectedCount={checkedThreadIds.length}
@@ -362,16 +363,18 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
                           >
                             {row.isFlagged ? '取消星标' : '加星'}
                           </button>
-                          <button
-                            aria-label={`归档线程：${row.subject}`}
-                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                            data-testid={`thread-row-archive-${row.id}`}
-                            disabled={pendingActionLabel !== null || roleTargets.archiveId === null}
-                            onClick={() => handleRowArchiveAction(row)}
-                            type="button"
-                          >
-                            归档
-                          </button>
+                          {roleTargets.archiveId === null ? null : (
+                            <button
+                              aria-label={`归档线程：${row.subject}`}
+                              className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                              data-testid={`thread-row-archive-${row.id}`}
+                              disabled={pendingActionLabel !== null}
+                              onClick={() => handleRowArchiveAction(row)}
+                              type="button"
+                            >
+                              归档
+                            </button>
+                          )}
                         </>
                       )}
                       <button

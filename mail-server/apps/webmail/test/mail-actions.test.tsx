@@ -58,10 +58,20 @@ const mockedUseJmapClient = vi.mocked(useJmapClient);
 const mailboxItems: readonly MailboxNavigationItem[] = [
   { accountId: 'primary', depth: 0, href: '/mail/inbox?accountId=primary&mailboxId=inbox-id', id: 'inbox-id', isActive: true, kind: 'system', name: '收件箱', role: 'inbox', totalCount: 8, unreadCount: 3 },
   { accountId: 'primary', depth: 0, href: '/mail/mailbox/drafts-id?accountId=primary&mailboxId=drafts-id', id: 'drafts-id', isActive: false, kind: 'system', name: '草稿', role: 'drafts', totalCount: 2, unreadCount: 0 },
+  { accountId: 'primary', depth: 0, href: '/mail/mailbox/sent-id?accountId=primary&mailboxId=sent-id', id: 'sent-id', isActive: false, kind: 'system', name: '已发送', role: 'sent', totalCount: 4, unreadCount: 0 },
   { accountId: 'primary', depth: 0, href: '/mail/mailbox/archive-id?accountId=primary', id: 'archive-id', isActive: false, kind: 'system', name: '归档', role: 'archive', totalCount: 3, unreadCount: 0 },
   { accountId: 'primary', depth: 0, href: '/mail/mailbox/junk-id?accountId=primary', id: 'junk-id', isActive: false, kind: 'system', name: '垃圾邮件', role: 'junk', totalCount: 1, unreadCount: 0 },
   { accountId: 'primary', depth: 0, href: '/mail/mailbox/trash-id?accountId=primary', id: 'trash-id', isActive: false, kind: 'system', name: '废纸篓', role: 'trash', totalCount: 0, unreadCount: 0 },
 ];
+
+function getMailboxByRole(items: readonly MailboxNavigationItem[], role: MailboxNavigationItem['role']) {
+  const mailbox = items.find((item) => item.role === role);
+  if (!mailbox) {
+    throw new Error(`Missing mailbox for role ${role ?? 'null'}`);
+  }
+
+  return mailbox;
+}
 
 function createRow(id: string, overrides?: Partial<ThreadListRow>): ThreadListRow {
   return {
@@ -106,6 +116,14 @@ function expectDeleteOnlyReaderActions() {
   expect(screen.queryByTestId('reader-reply')).not.toBeInTheDocument();
   expect(screen.queryByTestId('reader-reply-all')).not.toBeInTheDocument();
   expect(screen.queryByTestId('reader-forward')).not.toBeInTheDocument();
+}
+
+function expectDeleteOnlyBulkActions() {
+  expect(screen.queryByTestId('action-mark-read')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('action-star')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('action-move')).not.toBeInTheDocument();
+  expect(screen.getByTestId('action-delete')).toBeInTheDocument();
+  expect(screen.queryByTestId('action-spam')).not.toBeInTheDocument();
 }
 
 function createReaderThread(overrides?: Partial<{ isFlagged: boolean; isUnread: boolean; mailboxIds: Record<string, boolean>; subject: string }>) {
@@ -161,7 +179,13 @@ function createReaderThread(overrides?: Partial<{ isFlagged: boolean; isUnread: 
   };
 }
 
-function renderPanel(client: JmapClient, rows: readonly ThreadListRow[], refetch = vi.fn().mockResolvedValue(undefined), activeMailbox: MailboxNavigationItem = mailboxItems[0] as MailboxNavigationItem) {
+function renderPanel(
+  client: JmapClient,
+  rows: readonly ThreadListRow[],
+  refetch = vi.fn().mockResolvedValue(undefined),
+  activeMailbox: MailboxNavigationItem = getMailboxByRole(mailboxItems, 'inbox'),
+  panelMailboxItems: readonly MailboxNavigationItem[] = mailboxItems,
+) {
   mockedUseJmapClient.mockReturnValue(client);
   mockedUseQuery.mockReturnValue({
     data: {
@@ -185,14 +209,19 @@ function renderPanel(client: JmapClient, rows: readonly ThreadListRow[], refetch
       activeMailbox={activeMailbox}
       activeMailboxName={activeMailbox.name}
       isShellLoading={false}
-      mailboxItems={mailboxItems}
+      mailboxItems={panelMailboxItems}
       shellErrorMessage={null}
       topline="INBOX"
     />,
   );
 }
 
-function renderReader(client: JmapClient, thread = createReaderThread(), refetch = vi.fn().mockResolvedValue(undefined)) {
+function renderReader(
+  client: JmapClient,
+  thread = createReaderThread(),
+  refetch = vi.fn().mockResolvedValue(undefined),
+  readerMailboxItems: readonly MailboxNavigationItem[] = mailboxItems,
+) {
   mockedUseJmapClient.mockReturnValue(client);
   mockedUseJmapBootstrap.mockReturnValue({
     data: {
@@ -221,7 +250,7 @@ function renderReader(client: JmapClient, thread = createReaderThread(), refetch
     refetch,
   } as never);
 
-  return render(<ThreadReaderPane mailboxItems={mailboxItems} />);
+  return render(<ThreadReaderPane mailboxItems={readerMailboxItems} />);
 }
 
 async function renderShellReader(client: JmapClient, thread = createReaderThread(), refetch = vi.fn().mockResolvedValue(undefined)) {
@@ -330,6 +359,7 @@ describe('mail-actions', () => {
     const row = createRow('thread-1');
     const draftRow = createRow('draft-thread', { mailboxIds: { 'drafts-id': true } });
     const mixedDraftRow = createRow('mixed-draft-thread', { mailboxIds: { 'drafts-id': true, 'inbox-id': true } });
+    const trashRow = createRow('trash-thread', { mailboxIds: { 'trash-id': true } });
 
     expect(buildMailActionPatch({ action: { type: 'mark-read' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({ 'keywords/$seen': true });
     expect(buildMailActionPatch({ action: { type: 'star' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({ 'keywords/$flagged': true });
@@ -345,6 +375,7 @@ describe('mail-actions', () => {
       'mailboxIds/trash-id': true,
     });
     expect(buildMailActionPatch({ action: { type: 'delete' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({ 'mailboxIds/trash-id': true });
+    expect(buildMailActionPatch({ action: { type: 'delete' }, currentMailboxId: 'trash-id', roleTargets, thread: trashRow })).toBeNull();
     expect(buildMailActionPatch({ action: { type: 'spam' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({
       'keywords/$junk': true,
       'keywords/$notjunk': null,
@@ -409,7 +440,7 @@ describe('mail-actions', () => {
       { email: { set: vi.fn().mockReturnValue(deferred.promise) } } as unknown as JmapClient,
       [createRow('thread-1', { mailboxIds: { 'drafts-id': true } })],
       refetch,
-      mailboxItems[1] as MailboxNavigationItem,
+      getMailboxByRole(mailboxItems, 'drafts'),
     );
 
     fireEvent.click(screen.getByTestId('thread-row-delete-thread-1'));
@@ -427,25 +458,53 @@ describe('mail-actions', () => {
     });
   });
 
-  it('shows delete-only row actions in drafts and trash mailboxes', () => {
-    const draftsPanel = renderPanel(
-      { email: { set: vi.fn() } } as unknown as JmapClient,
-      [createRow('draft-thread', { mailboxIds: { 'drafts-id': true } })],
-      vi.fn().mockResolvedValue(undefined),
-      mailboxItems[1] as MailboxNavigationItem,
-    );
+  it('shows delete-only row and bulk actions in drafts sent and trash mailboxes', () => {
+    for (const role of ['drafts', 'sent', 'trash'] as const) {
+      const mailbox = getMailboxByRole(mailboxItems, role);
+      const threadId = `${role}-thread`;
+      const panel = renderPanel(
+        { email: { set: vi.fn() } } as unknown as JmapClient,
+        [createRow(threadId, { mailboxIds: { [mailbox.id]: true } })],
+        vi.fn().mockResolvedValue(undefined),
+        mailbox,
+      );
 
-    expectDeleteOnlyRowActions('draft-thread');
-    draftsPanel.unmount();
+      expectDeleteOnlyRowActions(threadId);
+      fireEvent.click(screen.getByTestId(`thread-select-${threadId}`));
+      expectDeleteOnlyBulkActions();
+      panel.unmount();
+    }
+  });
+
+  it('destroys trash row emails instead of patching them back to trash', async () => {
+    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { destroyed?: readonly string[]; newState: string } } }>();
+    const refetch = vi.fn().mockResolvedValue(undefined);
+    const setEmail = vi.fn().mockReturnValue(deferred.promise);
 
     renderPanel(
-      { email: { set: vi.fn() } } as unknown as JmapClient,
-      [createRow('trash-thread', { mailboxIds: { 'trash-id': true } })],
-      vi.fn().mockResolvedValue(undefined),
-      mailboxItems[4] as MailboxNavigationItem,
+      { email: { set: setEmail } } as unknown as JmapClient,
+      [createRow('trash-thread', { emailIds: ['trash-email-1', 'trash-email-2'], mailboxIds: { 'trash-id': true } })],
+      refetch,
+      getMailboxByRole(mailboxItems, 'trash'),
     );
 
-    expectDeleteOnlyRowActions('trash-thread');
+    fireEvent.click(screen.getByTestId('thread-row-delete-trash-thread'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('thread-row-trash-thread')).not.toBeInTheDocument();
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        destroy: ['trash-email-1', 'trash-email-2'],
+      });
+    });
+
+    deferred.resolve({ ok: true, result: { kind: 'success', response: { destroyed: ['trash-email-1', 'trash-email-2'], newState: 'next-state' } } });
+
+    await waitFor(() => {
+      expect(refetch).toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'trash-id'] });
+    });
   });
 
   it('projects deterministic removal and keyword updates', () => {
@@ -467,6 +526,9 @@ describe('mail-actions', () => {
     expect(screen.getByTestId('reader-action-move')).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-delete')).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-spam')).toBeInTheDocument();
+    expect(screen.getByTestId('reader-reply')).toHaveAttribute('href', expect.stringContaining('intent=reply'));
+    expect(screen.queryByTestId('reader-reply-all')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reader-forward')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('reader-action-mark-read'));
 
@@ -490,23 +552,53 @@ describe('mail-actions', () => {
     expect(screen.getByTestId('reader-action-spam')).toBeInTheDocument();
   });
 
-  it('shows delete-only reader actions in drafts and trash mailboxes', () => {
-    mockSearch = 'accountId=primary&mailboxId=drafts-id&threadId=thread-1';
-    const draftsReader = renderReader(
+  it('shows delete-only reader actions in drafts sent and trash mailboxes', () => {
+    for (const role of ['drafts', 'sent', 'trash'] as const) {
+      const mailbox = getMailboxByRole(mailboxItems, role);
+      mockSearch = `accountId=primary&mailboxId=${mailbox.id}&threadId=thread-1`;
+      const reader = renderReader(
+        { email: { set: vi.fn() } } as unknown as JmapClient,
+        createReaderThread({ mailboxIds: { [mailbox.id]: true }, subject: `${role} subject` }),
+      );
+
+      expectDeleteOnlyReaderActions();
+      reader.unmount();
+    }
+  });
+
+  it('hides archive on row bulk and reader surfaces when archive mailbox is unavailable', () => {
+    const mailboxItemsWithoutArchive = mailboxItems.filter((mailbox) => mailbox.role !== 'archive');
+    const inboxMailbox = getMailboxByRole(mailboxItemsWithoutArchive, 'inbox');
+    const panel = renderPanel(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'drafts-id': true }, subject: 'Draft subject' }),
+      [createRow('thread-1')],
+      vi.fn().mockResolvedValue(undefined),
+      inboxMailbox,
+      mailboxItemsWithoutArchive,
     );
 
-    expectDeleteOnlyReaderActions();
-    draftsReader.unmount();
+    expect(screen.queryByTestId('thread-row-archive-thread-1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('thread-select-thread-1'));
+    expect(screen.queryByTestId('action-move')).not.toBeInTheDocument();
+    expect(screen.getByTestId('action-mark-read')).toBeInTheDocument();
+    expect(screen.getByTestId('action-star')).toBeInTheDocument();
+    expect(screen.getByTestId('action-delete')).toBeInTheDocument();
+    expect(screen.getByTestId('action-spam')).toBeInTheDocument();
+    panel.unmount();
 
-    mockSearch = 'accountId=primary&mailboxId=trash-id&threadId=thread-1';
+    mockSearch = 'accountId=primary&mailboxId=inbox-id&threadId=thread-1';
     renderReader(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'trash-id': true }, subject: 'Trash subject' }),
+      createReaderThread(),
+      vi.fn().mockResolvedValue(undefined),
+      mailboxItemsWithoutArchive,
     );
 
-    expectDeleteOnlyReaderActions();
+    expect(screen.queryByTestId('reader-action-move')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reader-action-mark-read')).toBeInTheDocument();
+    expect(screen.getByTestId('reader-action-star')).toBeInTheDocument();
+    expect(screen.getByTestId('reader-action-delete')).toBeInTheDocument();
+    expect(screen.getByTestId('reader-action-spam')).toBeInTheDocument();
   });
 
   it('invalidates draft list and mailbox shell after reader delete succeeds', async () => {
@@ -526,6 +618,34 @@ describe('mail-actions', () => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'drafts-id'] });
       expect(mockReplace).toHaveBeenCalledWith('/mail/inbox?accountId=primary&mailboxId=drafts-id');
+    });
+  });
+
+  it('destroys trash reader emails instead of patching them back to trash', async () => {
+    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { destroyed?: readonly string[]; newState: string } } }>();
+    const setEmail = vi.fn().mockReturnValue(deferred.promise);
+    mockSearch = 'accountId=primary&mailboxId=trash-id&threadId=thread-1';
+
+    renderReader(
+      { email: { set: setEmail } } as unknown as JmapClient,
+      createReaderThread({ mailboxIds: { 'trash-id': true }, subject: 'Trash subject' }),
+    );
+
+    fireEvent.click(screen.getByTestId('reader-action-delete'));
+
+    await waitFor(() => {
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        destroy: ['email-thread-1-1', 'email-thread-1-2'],
+      });
+    });
+
+    deferred.resolve({ ok: true, result: { kind: 'success', response: { destroyed: ['email-thread-1-1', 'email-thread-1-2'], newState: 'next-state' } } });
+
+    await waitFor(() => {
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'trash-id'] });
+      expect(mockReplace).toHaveBeenCalledWith('/mail/inbox?accountId=primary&mailboxId=trash-id');
     });
   });
 

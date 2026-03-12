@@ -50,7 +50,7 @@ function clearThreadSelectionHref(pathname: string, searchParams: URLSearchParam
 }
 
 function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
-  return role === 'drafts' || role === 'trash';
+  return role === 'drafts' || role === 'sent' || role === 'trash';
 }
 
 function resolveCurrentMailboxId(pathname: string, searchParams: URLSearchParams, mailboxItems: readonly MailboxNavigationItem[], roleTargets: ReturnType<typeof resolveMailboxRoleTargets>) {
@@ -442,13 +442,6 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
     returnTo: currentRoute,
     threadId: displayedThread.id,
   });
-  const composeReplyAllHref = buildComposeRouteHref({
-    accountId: displayedThread.accountId,
-    intent: 'reply-all',
-    messageId: latestMessage.id,
-    returnTo: currentRoute,
-    threadId: displayedThread.id,
-  });
   const composeForwardHref = buildComposeRouteHref({
     accountId: displayedThread.accountId,
     intent: 'forward',
@@ -545,9 +538,6 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
               <div className="flex flex-wrap gap-2">
                 <Link aria-label="回复当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply" href={composeReplyHref}>
                   回复
-                </Link>
-                <Link aria-label="回复所有收件人" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply-all" href={composeReplyAllHref}>
-                  全部回复
                 </Link>
                 <Link aria-label="转发当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-accent/40 bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/90" data-testid="reader-forward" href={composeForwardHref}>
                   转发

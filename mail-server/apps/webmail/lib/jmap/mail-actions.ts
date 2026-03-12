@@ -92,6 +92,10 @@ function withoutMailboxId(mailboxIds: Readonly<Record<string, boolean>>, mailbox
   return Object.fromEntries(Object.entries(mailboxIds).filter(([id, enabled]) => id !== mailboxId && isSuccessfulMailboxId(enabled)));
 }
 
+function isPermanentDeleteAction(action: MailActionRequest, currentMailboxId: string, roleTargets: MailActionMailboxRoleTargets) {
+  return action.type === 'delete' && roleTargets.trashId !== null && currentMailboxId === roleTargets.trashId;
+}
+
 function resolveTargetMailboxId(action: MailActionRequest, currentMailboxId: string, roleTargets: MailActionMailboxRoleTargets) {
   switch (action.type) {
     case 'archive':
@@ -254,6 +258,10 @@ export function buildMailActionPatch(input: {
     return null;
   }
 
+  if (isPermanentDeleteAction(input.action, input.currentMailboxId, input.roleTargets)) {
+    return null;
+  }
+
   switch (input.action.type) {
     case 'mark-read':
       return setBooleanPatch(`keywords/${KEYWORD_SEEN}`, true);
@@ -290,9 +298,15 @@ export function buildMailActionPatch(input: {
 }
 
 export async function executeMailAction(input: MailActionExecutionInput): Promise<MailActionExecutionResult> {
+  const destroyEmailIds: string[] = [];
   const updateEntries: Array<[string, JmapPatchObject]> = [];
 
   for (const thread of input.threads) {
+    if (isPermanentDeleteAction(input.action, input.currentMailboxId, input.roleTargets)) {
+      destroyEmailIds.push(...thread.emailIds);
+      continue;
+    }
+
     const patch = buildMailActionPatch({
       action: input.action,
       currentMailboxId: input.currentMailboxId,
@@ -312,7 +326,7 @@ export async function executeMailAction(input: MailActionExecutionInput): Promis
     }
   }
 
-  if (updateEntries.length === 0) {
+  if (destroyEmailIds.length === 0 && updateEntries.length === 0) {
     return {
       kind: 'failure',
       message: '没有可更新的邮件。',
@@ -321,7 +335,8 @@ export async function executeMailAction(input: MailActionExecutionInput): Promis
 
   const result = await input.client.email.set({
     accountId: input.accountId,
-    update: Object.fromEntries(updateEntries),
+    ...(destroyEmailIds.length > 0 ? { destroy: destroyEmailIds } : {}),
+    ...(updateEntries.length > 0 ? { update: Object.fromEntries(updateEntries) } : {}),
   });
 
   if (!result.ok) {
@@ -346,9 +361,17 @@ export async function executeMailAction(input: MailActionExecutionInput): Promis
     };
   }
 
+  const notDestroyedEntries = Object.entries(result.result.response.notDestroyed ?? {});
+  if (notDestroyedEntries.length > 0) {
+    return {
+      kind: 'failure',
+      message: normalizeInvocationError(notDestroyedEntries[0]?.[1], `${createMailActionLabel(input.action)}失败。`),
+    };
+  }
+
   return {
     kind: 'success',
-    updatedEmailIds: updateEntries.map(([emailId]) => emailId),
+    updatedEmailIds: [...destroyEmailIds, ...updateEntries.map(([emailId]) => emailId)],
   };
 }
 

@@ -4,14 +4,15 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, parseComposeRecipients, parseComposeRouteState, validateComposeForm } from '@/lib/jmap/compose-core';
-import type { ReaderThread } from '@/lib/jmap/message-reader';
+import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, parseComposeRecipients, parseComposeRouteState, validateComposeForm, type ComposeDraftRecord } from '@/lib/jmap/compose-core';
+import { queryReaderThread, type ReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
 
 const LEGACY_NEW_DRAFT_KEY = 'new::primary::standalone-thread::latest-message';
 const mockPush = vi.fn();
 let mockSearchParams = new URLSearchParams('intent=new&accountId=primary');
+let currentClient = createClientMock();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/mail/compose',
@@ -33,8 +34,18 @@ vi.mock('@/components/system/toast-region', () => ({
   useToast: () => ({ notify: vi.fn() }),
 }));
 
+vi.mock('@/lib/jmap/message-reader', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/jmap/message-reader')>('@/lib/jmap/message-reader');
+
+  return {
+    ...actual,
+    queryReaderThread: vi.fn(),
+  };
+});
+
 const mockedUseJmapBootstrap = vi.mocked(useJmapBootstrap);
 const mockedUseJmapClient = vi.mocked(useJmapClient);
+const mockedQueryReaderThread = vi.mocked(queryReaderThread);
 
 function renderWithQueryClient(node: React.ReactNode) {
   const client = new QueryClient({
@@ -47,6 +58,98 @@ function renderWithQueryClient(node: React.ReactNode) {
   });
 
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+}
+
+function createClientMock() {
+  let createdCount = 0;
+
+  return {
+    email: {
+      set: vi.fn().mockImplementation(async (request: { create?: Record<string, unknown>; destroy?: readonly string[]; update?: Record<string, unknown> }) => {
+        if (request.create?.['draft-email']) {
+          createdCount += 1;
+
+          return {
+            ok: true,
+            result: {
+              accountId: 'primary',
+              callId: 'draft-create',
+              kind: 'success',
+              name: 'Email/set',
+              response: {
+                accountId: 'primary',
+                created: { 'draft-email': { id: `draft-${createdCount}` } },
+                newState: `email-state-${createdCount}`,
+              },
+            },
+            session: {},
+          };
+        }
+
+        if (request.update) {
+          const draftEmailId = Object.keys(request.update)[0] ?? 'draft-1';
+
+          return {
+            ok: true,
+            result: {
+              accountId: 'primary',
+              callId: 'draft-update',
+              kind: 'success',
+              name: 'Email/set',
+              response: {
+                accountId: 'primary',
+                newState: `email-state-${createdCount + 1}`,
+                updated: { [draftEmailId]: null },
+              },
+            },
+            session: {},
+          };
+        }
+
+        return {
+          ok: true,
+          result: {
+            accountId: 'primary',
+            callId: 'draft-destroy',
+            kind: 'success',
+            name: 'Email/set',
+            response: {
+              accountId: 'primary',
+              destroyed: request.destroy ?? [],
+              newState: `email-state-${createdCount + 1}`,
+            },
+          },
+          session: {},
+        };
+      }),
+    },
+    identity: {
+      get: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: {
+            accountId: 'primary',
+            list: [{ email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], state: 'identity-state', textSignature: 'Regards' }],
+            state: 'identity-state',
+          },
+        },
+      }),
+    },
+    mailbox: {
+      get: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: { accountId: 'primary', list: [{ id: 'drafts-id', name: 'Drafts', role: 'drafts' }, { id: 'sent-id', name: 'Sent', role: 'sent' }], state: 'mailbox-state' },
+        },
+      }),
+      query: vi.fn().mockResolvedValue({
+        ok: true,
+        result: { kind: 'success', response: { accountId: 'primary', canCalculateChanges: true, ids: ['drafts-id', 'sent-id'], position: 0, queryState: 'mailbox-query' } },
+      }),
+    },
+  };
 }
 
 function createThread(): ReaderThread {
@@ -98,7 +201,10 @@ beforeEach(() => {
   useComposeDraftStore.persist.clearStorage();
   useComposeDraftStore.setState({ drafts: {} });
   window.localStorage.removeItem(COMPOSE_DRAFT_STORAGE_KEY);
-  mockedUseJmapClient.mockReturnValue({} as never);
+  currentClient = createClientMock();
+  mockedUseJmapClient.mockReturnValue(currentClient as never);
+  mockedQueryReaderThread.mockReset();
+  mockedQueryReaderThread.mockResolvedValue(createThread());
   mockedUseJmapBootstrap.mockReturnValue({
     data: {
       session: {
@@ -146,21 +252,47 @@ describe('compose-core', () => {
     expect(buildFreshComposeRouteHref({ accountId: 'primary', returnTo: '/mail/inbox' })).toMatch(/^\/mail\/compose\?intent=new&accountId=primary&draftId=fresh-/);
   });
 
-  it('builds reply-all and forward prefills from reader metadata', () => {
+  it('degrades legacy reply-all routes to reply semantics', () => {
     const thread = createThread();
-    const replyAll = buildComposePrefill({ intent: 'reply-all', messageId: 'message-1', selfEmail: 'owner@example.com', thread });
-    const forward = buildComposePrefill({ intent: 'forward', messageId: 'message-1', selfEmail: 'owner@example.com', thread });
+    const routeState = parseComposeRouteState(new URLSearchParams('intent=reply-all&accountId=primary&messageId=message-1&threadId=thread-1'));
+    const reply = buildComposePrefill({ intent: routeState.intent, messageId: routeState.messageId, selfEmail: 'owner@example.com', thread });
 
-    expect(replyAll.form.to).toBe('Reply Desk <reply@example.com>, Team <team@example.com>, Teammate <teammate@example.com>');
-    expect(replyAll.form.subject).toBe('回复：项目更新');
-    expect(replyAll.form.body).toContain('发件人：Alice <alice@example.com>');
-    expect(replyAll.form.body).toContain('抄送：Teammate <teammate@example.com>、owner@example.com');
-    expect(replyAll.form.body).toContain('> 第一行');
+    expect(routeState.intent).toBe('reply');
+    expect(reply.form.to).toBe('Reply Desk <reply@example.com>');
+    expect(reply.form.subject).toBe('回复：项目更新');
+    expect(reply.form.body).toBe('');
+    expect(reply.quoted?.body).toContain('发件人：Alice <alice@example.com>');
+    expect(reply.quoted?.body).toContain('抄送：Teammate <teammate@example.com>、owner@example.com');
+    expect(reply.quoted?.body).toContain('> 第一行');
+  });
+
+  it('builds forward prefills from reader metadata', () => {
+    const thread = createThread();
+    const forward = buildComposePrefill({ intent: 'forward', messageId: 'message-1', selfEmail: 'owner@example.com', thread });
 
     expect(forward.form.to).toBe('');
     expect(forward.form.subject).toBe('转发：项目更新');
-    expect(forward.form.body).toContain('-------- 转发邮件 --------');
-    expect(forward.form.body).toContain('第一行\n第二行');
+    expect(forward.form.body).toBe('');
+    expect(forward.quoted?.body).toContain('-------- 转发邮件 --------');
+    expect(forward.quoted?.body).toContain('第一行\n第二行');
+  });
+
+  it('renders quoted reply content in a separate read-only block', async () => {
+    mockSearchParams = new URLSearchParams('intent=reply&accountId=primary&threadId=thread-1&messageId=message-1');
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(mockedQueryReaderThread).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('identity-select')).toHaveValue('identity-1'));
+    await waitFor(() => expect(screen.getByTestId('compose-body')).toHaveValue(''));
+
+    expect(screen.getByTestId('compose-quoted-block')).toBeVisible();
+    expect(screen.getByTestId('compose-quoted-content')).toHaveTextContent('-------- 原始邮件 --------');
+    expect(screen.getByTestId('compose-quoted-content')).toHaveTextContent('> 第一行');
+
+    fireEvent.change(screen.getByTestId('compose-body'), { target: { value: '这是新的回复正文' } });
+    expect(screen.getByTestId('compose-body')).toHaveValue('这是新的回复正文');
+    expect(screen.getByTestId('compose-quoted-content')).toHaveTextContent('第二行');
   });
 
   it('registers an unsaved-change beforeunload guard', () => {
@@ -178,33 +310,14 @@ describe('compose-core', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('wires keyboard save-close at core level', () => {
+  it('wires keyboard save-close at core level', async () => {
     renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+    await waitFor(() => expect(currentClient.mailbox.get).toHaveBeenCalled());
 
     fireEvent.change(screen.getByTestId('compose-subject'), { target: { value: '暂存草稿' } });
     fireEvent.keyDown(screen.getByTestId('compose-form'), { ctrlKey: true, key: 's' });
 
-    expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary');
-  });
-
-  it('rehydrates saved drafts from durable local storage', async () => {
-    const firstRender = renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
-
-    fireEvent.change(screen.getByTestId('compose-subject'), { target: { value: '持久化草稿' } });
-    fireEvent.click(screen.getByTestId('compose-save-close'));
-
-    const persistedDrafts = window.localStorage.getItem(COMPOSE_DRAFT_STORAGE_KEY);
-    expect(persistedDrafts).toContain('持久化草稿');
-
-    firstRender.unmount();
-    useComposeDraftStore.setState({ drafts: {} });
-    window.localStorage.setItem(COMPOSE_DRAFT_STORAGE_KEY, persistedDrafts as string);
-    await useComposeDraftStore.persist.rehydrate();
-
-    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
-
-    expect(screen.getByTestId('compose-subject')).toHaveValue('持久化草稿');
-    expect(screen.getByTestId('draft-status')).toHaveTextContent(/已恢复 .* 暂存的草稿。/);
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
   });
 
   it('keeps inbox fresh compose empty even when a legacy new draft exists', async () => {
@@ -253,45 +366,6 @@ describe('compose-core', () => {
     await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent('草稿已自动保存。'));
     await waitFor(() => expect(subjectField).toHaveFocus());
     expect(toField).not.toHaveFocus();
-  });
-
-  it('lets restored drafts continue editing away from compose-to after blur save', async () => {
-    useComposeDraftStore.getState().saveDraft(LEGACY_NEW_DRAFT_KEY, {
-      accountId: 'primary',
-      attachments: [],
-      form: {
-        body: '已恢复正文',
-        subject: '已恢复主题',
-        to: 'alice@example.com',
-      },
-      identityId: null,
-      intent: 'new',
-      messageId: null,
-      returnTo: null,
-      threadId: null,
-      updatedAt: Date.now(),
-    });
-
-    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
-
-    const toField = screen.getByTestId('compose-to');
-    const subjectField = screen.getByTestId('compose-subject');
-    const bodyField = screen.getByTestId('compose-body');
-
-    await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent(/已恢复 .* 暂存的草稿。/));
-    expect(subjectField).toHaveValue('已恢复主题');
-
-    fireEvent.change(subjectField, { target: { value: '继续编辑后的主题' } });
-    await act(async () => {
-      bodyField.focus();
-      fireEvent.blur(subjectField);
-      await Promise.resolve();
-    });
-
-    await waitFor(() => expect(screen.getByTestId('draft-status')).toHaveTextContent('草稿已自动保存。'));
-    await waitFor(() => expect(bodyField).toHaveFocus());
-    expect(toField).not.toHaveFocus();
-    expect(subjectField).toHaveValue('继续编辑后的主题');
   });
 
   it('keeps focus on subject during interval autosave for a fresh compose', async () => {

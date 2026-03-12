@@ -1,6 +1,6 @@
 import type { ReaderMessage, ReaderParticipant, ReaderThread } from '@/lib/jmap/message-reader';
 
-export type ComposeIntent = 'forward' | 'new' | 'reply' | 'reply-all';
+export type ComposeIntent = 'forward' | 'new' | 'reply';
 
 export interface ComposeRecipient {
   readonly email: string;
@@ -70,8 +70,10 @@ export interface ComposeDraftRecord {
   readonly form: ComposeFormState;
   readonly identityId: string | null;
   readonly intent: ComposeIntent;
-  readonly messageId: string | null;
+   readonly messageId: string | null;
+  readonly quoted?: ComposeQuotedContent | null;
   readonly returnTo: string | null;
+  readonly serverDraftId?: string | null;
   readonly threadId: string | null;
   readonly updatedAt: number;
 }
@@ -266,7 +268,11 @@ function buildQuotedHeader(intent: ComposeIntent, message: ReaderMessage, selfEm
 }
 
 export function parseComposeIntent(value: string | null | undefined): ComposeIntent {
-  return value === 'reply' || value === 'reply-all' || value === 'forward' || value === 'new' ? value : NEW_INTENT;
+  if (value === 'reply-all') {
+    return 'reply';
+  }
+
+  return value === 'reply' || value === 'forward' || value === 'new' ? value : NEW_INTENT;
 }
 
 export function parseComposeRouteState(searchParams: URLSearchParams): ComposeRouteState {
@@ -352,6 +358,27 @@ export function areComposeFormStatesEqual(left: ComposeFormState, right: Compose
 
 export function hasComposeContent(form: ComposeFormState) {
   return form.to.trim().length > 0 || form.subject.trim().length > 0 || form.body.trim().length > 0;
+}
+
+export function composeBodyWithQuotedContent(body: string, quoted: ComposeQuotedContent | null) {
+  if (!quoted) {
+    return body;
+  }
+
+  return body.trim().length > 0 ? `${body}\n\n${quoted.body}` : quoted.body;
+}
+
+export function extractEditableComposeBody(body: string, quoted: ComposeQuotedContent | null) {
+  if (!quoted) {
+    return body;
+  }
+
+  if (body === quoted.body) {
+    return '';
+  }
+
+  const quotedSuffix = `\n\n${quoted.body}`;
+  return body.endsWith(quotedSuffix) ? body.slice(0, -quotedSuffix.length) : body;
 }
 
 export function parseComposeRecipients(value: string) {
@@ -473,7 +500,7 @@ export function buildComposePrefill(input: {
   if (input.intent === 'forward') {
     return {
       form: {
-        body: `\n\n${quoted.body}`,
+        body: '',
         subject: buildForwardSubject(message.subject),
         to: '',
       },
@@ -481,13 +508,11 @@ export function buildComposePrefill(input: {
     };
   }
 
-  const replyRecipients = input.intent === 'reply'
-    ? dedupeParticipants(pickReplyRecipients(message), input.selfEmail)
-    : dedupeParticipants([...pickReplyRecipients(message), ...message.to, ...message.cc], input.selfEmail);
+  const replyRecipients = dedupeParticipants(pickReplyRecipients(message), input.selfEmail);
 
   return {
     form: {
-      body: `\n\n${quoted.body}`,
+      body: '',
       subject: buildReplySubject(message.subject),
       to: serializeRecipients(replyRecipients),
     },

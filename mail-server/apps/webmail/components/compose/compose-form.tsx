@@ -10,18 +10,24 @@ import {
   areComposeFormStatesEqual,
   buildComposeDraftKey,
   buildComposePrefill,
+  composeBodyWithQuotedContent,
   EMPTY_COMPOSE_FORM_STATE,
+  extractEditableComposeBody,
   hasComposeContent,
   parseComposeRouteState,
+  type ComposeDraftRecord,
   type ComposeFormState,
+  type ComposeQuotedContent,
   type ComposeValidationErrors,
   validateComposeForm,
 } from '@/lib/jmap/compose-core';
 import {
   createDraftStatus,
+  destroyComposeDraft,
   findAttachmentFailure,
   fromStoredAttachments,
   hasPendingAttachment,
+  persistComposeDraft,
   selectDefaultIdentityId,
   submitComposeMessage,
   toComposeIdentityOptions,
@@ -52,13 +58,17 @@ interface ComposeInitialLoad {
   readonly identityId: string | null;
   readonly message: string | null;
   readonly phase: ComposeFormPhase;
+  readonly quoted: ComposeQuotedContent | null;
 }
 
 interface DraftSnapshot {
   readonly attachments: readonly ComposeAttachmentRecord[];
   readonly form: ComposeFormState;
   readonly identityId: string | null;
+  readonly quoted: ComposeQuotedContent | null;
 }
+
+type DraftPersistenceReason = 'autosave' | 'blur' | 'close' | 'failure';
 
 const AUTOSAVE_INTERVAL_MS = 12_000;
 const EMPTY_ERRORS: ComposeValidationErrors = { body: null, subject: null, to: null };
@@ -93,8 +103,6 @@ function intentTitle(intent: ReturnType<typeof parseComposeRouteState>['intent']
   switch (intent) {
     case 'reply':
       return '回复邮件';
-    case 'reply-all':
-      return '全部回复';
     case 'forward':
       return '转发邮件';
     default:
@@ -106,8 +114,6 @@ function intentHint(intent: ReturnType<typeof parseComposeRouteState>['intent'])
   switch (intent) {
     case 'reply':
       return '回复会继承引用正文；身份、附件与自动保存现已接入真实发送链路。';
-    case 'reply-all':
-      return '全部回复会自动去重并排除当前账号地址，避免重复发给自己。';
     case 'forward':
       return '转发支持附件续传、草稿恢复与真实提交，不会在失败时丢失内容。';
     default:
@@ -159,10 +165,6 @@ function formatAttachmentStateLabel(state: ComposeAttachmentRecord['state']) {
   }
 }
 
-function hasDraftMaterial(form: ComposeFormState, attachments: readonly ComposeAttachmentRecord[]) {
-  return hasComposeContent(form) || attachments.length > 0;
-}
-
 function toFailureMessage(failure: ComposeSubmissionFailure | null) {
   return failure?.message ?? null;
 }
@@ -183,6 +185,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const [baselineAttachmentSignature, setBaselineAttachmentSignature] = useState<string>(buildAttachmentSignature([]));
   const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(null);
   const [baselineIdentityId, setBaselineIdentityId] = useState<string | null>(null);
+  const [quotedContent, setQuotedContent] = useState<ComposeQuotedContent | null>(null);
   const [validationErrors, setValidationErrors] = useState<ComposeValidationErrors>(EMPTY_ERRORS);
   const [actionState, setActionState] = useState<ComposeActionState>({ kind: 'idle', message: null });
   const [phase, setPhase] = useState<ComposeFormPhase>('empty');
@@ -195,17 +198,20 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const toRef = useRef<HTMLInputElement | null>(null);
   const initializedDraftSignatureRef = useRef<string | null>(null);
   const hasLocalSessionChangesRef = useRef(false);
-  const latestSnapshotRef = useRef<DraftSnapshot>({ attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null });
+  const latestSnapshotRef = useRef<DraftSnapshot>({ attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, quoted: null });
   const latestRouteStateRef = useRef(routeState);
   const latestAccountIdRef = useRef(accountId);
   const hasSentRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const serverDraftIdRef = useRef<string | null>(storedDraft?.serverDraftId ?? null);
+  const serverDraftQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const selfEmail = sessionSummary?.username?.trim().toLowerCase() ?? null;
   const needsQuotedPrefill = routeState.intent !== 'new';
   const fallbackCloseHref = buildFallbackCloseHref(accountId);
   const returnToHref = routeState.returnTo ?? fallbackCloseHref;
 
   const threadQuery = useQuery({
-    enabled: needsQuotedPrefill && Boolean(accountId && routeState.threadId) && !storedDraft,
+    enabled: needsQuotedPrefill && Boolean(accountId && routeState.threadId) && (!storedDraft || !storedDraft.quoted),
     queryFn: () => queryReaderThread({ accountId: accountId as string, client, threadId: routeState.threadId as string }),
     queryKey: ['compose-thread-source', accountId, routeState.threadId],
     staleTime: 1000 * 30,
@@ -267,24 +273,40 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const selectedIdentity = identityState.kind === 'ready'
     ? identityState.identities.find((identity) => identity.id === selectedIdentityId) ?? null
     : null;
+  const quotedPrefill = useMemo(() => {
+    if (!threadQuery.data) {
+      return null;
+    }
+
+    return buildComposePrefill({ intent: routeState.intent, messageId: routeState.messageId, selfEmail, thread: threadQuery.data });
+  }, [routeState.intent, routeState.messageId, selfEmail, threadQuery.data]);
 
   const initialLoad = useMemo<ComposeInitialLoad | null>(() => {
     if (storedDraft) {
+      if (needsQuotedPrefill && !storedDraft.quoted && threadQuery.isLoading) {
+        return null;
+      }
+
+      const storedQuoted = storedDraft.quoted ?? quotedPrefill?.quoted ?? null;
+
       return {
         attachments: fromStoredAttachments(storedDraft.attachments ?? []),
-        form: storedDraft.form,
+        form: storedQuoted
+          ? { ...storedDraft.form, body: extractEditableComposeBody(storedDraft.form.body, storedQuoted) }
+          : storedDraft.form,
         identityId: storedDraft.identityId ?? null,
         message: `已恢复 ${formatDraftTimestamp(storedDraft.updatedAt)} 暂存的草稿。`,
         phase: 'draft',
+        quoted: storedQuoted,
       };
     }
 
     if (!needsQuotedPrefill) {
-      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: null, phase: 'empty' };
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: null, phase: 'empty', quoted: null };
     }
 
     if (!accountId || !routeState.threadId) {
-      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: '缺少引用上下文，已回退为空白草稿。', phase: 'warning' };
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: '缺少引用上下文，已回退为空白草稿。', phase: 'warning', quoted: null };
     }
 
     if (threadQuery.isLoading) {
@@ -298,17 +320,19 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
         identityId: null,
         message: threadQuery.isError ? (threadQuery.error instanceof Error ? threadQuery.error.message : '引用邮件读取失败，已回退为空白草稿。') : '未找到可引用的线程内容，已回退为空白草稿。',
         phase: 'warning',
+        quoted: null,
       };
     }
 
     return {
       attachments: [],
-      form: buildComposePrefill({ intent: routeState.intent, messageId: routeState.messageId, selfEmail, thread: threadQuery.data }).form,
+      form: quotedPrefill?.form ?? EMPTY_COMPOSE_FORM_STATE,
       identityId: null,
       message: null,
       phase: 'prefill',
+      quoted: quotedPrefill?.quoted ?? null,
     };
-  }, [accountId, needsQuotedPrefill, routeState.intent, routeState.messageId, routeState.threadId, selfEmail, storedDraft, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
+  }, [accountId, needsQuotedPrefill, quotedPrefill, routeState.threadId, storedDraft, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
 
   const attachmentSignature = useMemo(() => buildAttachmentSignature(attachments), [attachments]);
   const isDirty = !areComposeFormStatesEqual(formState, baselineState)
@@ -316,10 +340,18 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     || selectedIdentityId !== baselineIdentityId;
 
   useEffect(() => {
-    latestSnapshotRef.current = { attachments, form: formState, identityId: selectedIdentityId };
+    latestSnapshotRef.current = { attachments, form: formState, identityId: selectedIdentityId, quoted: quotedContent };
     latestRouteStateRef.current = routeState;
     latestAccountIdRef.current = accountId;
-  }, [accountId, attachments, formState, routeState, selectedIdentityId]);
+  }, [accountId, attachments, formState, quotedContent, routeState, selectedIdentityId]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (identityQuery.isLoading) {
@@ -365,12 +397,14 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     initializedDraftSignatureRef.current = signature;
     hasLocalSessionChangesRef.current = false;
+    serverDraftIdRef.current = storedDraft?.serverDraftId ?? null;
     setFormState(initialLoad.form);
     setBaselineState(initialLoad.form);
     setAttachments(initialLoad.attachments);
     setBaselineAttachmentSignature(buildAttachmentSignature(initialLoad.attachments));
     setSelectedIdentityId(initialLoad.identityId);
     setBaselineIdentityId(initialLoad.identityId);
+    setQuotedContent(initialLoad.quoted);
     setValidationErrors(EMPTY_ERRORS);
     setPhase(initialLoad.phase);
     setDraftStatus(createDraftStatus('idle', initialLoad.message ?? '等待修改'));
@@ -387,39 +421,178 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       bodyRef.current?.focus();
       bodyRef.current?.setSelectionRange(0, 0);
     });
-  }, [draftKey, initialLoad, routeState.intent, storedDraft?.updatedAt]);
+  }, [draftKey, initialLoad, routeState.intent, storedDraft?.serverDraftId, storedDraft?.updatedAt]);
 
-  const persistDraft = useCallback((snapshot?: DraftSnapshot, reason?: 'autosave' | 'blur' | 'close' | 'failure') => {
+  const buildStoredDraftRecord = useCallback((snapshot: DraftSnapshot, updatedAt: number, serverDraftId: string | null): ComposeDraftRecord => ({
+    accountId: latestAccountIdRef.current,
+    attachments: toStoredAttachments(snapshot.attachments),
+    form: snapshot.form,
+    identityId: snapshot.identityId,
+    intent: latestRouteStateRef.current.intent,
+    messageId: latestRouteStateRef.current.messageId,
+    quoted: snapshot.quoted,
+    returnTo: latestRouteStateRef.current.returnTo,
+    serverDraftId,
+    threadId: latestRouteStateRef.current.threadId,
+    updatedAt,
+  }), []);
+
+  const storeDraftLocally = useCallback((snapshot: DraftSnapshot, serverDraftId: string | null = serverDraftIdRef.current) => {
+    useComposeDraftStore.getState().saveDraft(draftKey, buildStoredDraftRecord(snapshot, Date.now(), serverDraftId));
+  }, [buildStoredDraftRecord, draftKey]);
+
+  const resolveMailboxRoleStateForPersistence = useCallback(async () => {
+    if (mailboxRoleState.draftsId) {
+      return mailboxRoleState;
+    }
+
+    const activeAccountId = latestAccountIdRef.current;
+
+    if (!activeAccountId) {
+      return mailboxRoleState;
+    }
+
+    const queryResult = await client.mailbox.query({ accountId: activeAccountId, sort: MAILBOX_QUERY_SORT });
+
+    if (!queryResult.ok || queryResult.result.kind !== 'success' || queryResult.result.response.ids.length === 0) {
+      return mailboxRoleState;
+    }
+
+    const getResult = await client.mailbox.get({ accountId: activeAccountId, ids: queryResult.result.response.ids, properties: MAILBOX_PROPERTIES });
+
+    if (!getResult.ok || getResult.result.kind !== 'success') {
+      return mailboxRoleState;
+    }
+
+    return toComposeMailboxRoleState(getResult.result.response.list);
+  }, [client, mailboxRoleState]);
+
+  const resolvePersistenceIdentity = useCallback((identityId: string | null) => {
+    if (identityState.kind !== 'ready') {
+      return null;
+    }
+
+    return identityState.identities.find((identity) => identity.id === identityId)
+      ?? identityState.identities.find((identity) => identity.id === identityState.selectedIdentityId)
+      ?? identityState.identities[0]
+      ?? null;
+  }, [identityState]);
+
+  const queueServerDraftSave = useCallback((snapshot: DraftSnapshot, suppressState = false) => {
+    const persistedSnapshot: DraftSnapshot = {
+      attachments: [...snapshot.attachments],
+      form: { ...snapshot.form },
+      identityId: snapshot.identityId,
+      quoted: snapshot.quoted,
+    };
+
+    const queued = serverDraftQueueRef.current.then(async () => {
+      const activeAccountId = latestAccountIdRef.current;
+
+      if (!activeAccountId) {
+        return false;
+      }
+
+      const resolvedMailboxRoleState = await resolveMailboxRoleStateForPersistence();
+
+      const result = await persistComposeDraft({
+        accountId: activeAccountId,
+        attachments: persistedSnapshot.attachments,
+        client,
+        draftEmailId: serverDraftIdRef.current,
+        form: { ...persistedSnapshot.form, body: composeBodyWithQuotedContent(persistedSnapshot.form.body, persistedSnapshot.quoted) },
+        identity: resolvePersistenceIdentity(persistedSnapshot.identityId),
+        mailboxRoleState: resolvedMailboxRoleState,
+      });
+
+      if (result.kind === 'failure') {
+        if (!suppressState && isMountedRef.current) {
+          setDraftStatus(createDraftStatus('error', result.failure.message));
+        }
+
+        return false;
+      }
+
+      serverDraftIdRef.current = result.draftEmailId;
+      storeDraftLocally(persistedSnapshot, result.draftEmailId);
+      return true;
+    });
+
+    serverDraftQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [client, resolveMailboxRoleStateForPersistence, resolvePersistenceIdentity, storeDraftLocally]);
+
+  const queueServerDraftDestroy = useCallback((suppressState = false) => {
+    const activeAccountId = latestAccountIdRef.current;
+    const activeServerDraftId = serverDraftIdRef.current;
+
+    if (!activeAccountId || !activeServerDraftId) {
+      return Promise.resolve();
+    }
+
+    const queued = serverDraftQueueRef.current.then(async () => {
+      const result = await destroyComposeDraft({
+        accountId: activeAccountId,
+        client,
+        draftEmailId: activeServerDraftId,
+      });
+
+      if (result.kind === 'failure') {
+        if (!suppressState && isMountedRef.current) {
+          setDraftStatus(createDraftStatus('error', result.failure.message));
+        }
+
+        return;
+      }
+
+      serverDraftIdRef.current = null;
+    });
+
+    serverDraftQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [client]);
+
+  const persistDraft = useCallback(async (snapshot?: DraftSnapshot, reason: DraftPersistenceReason = 'autosave') => {
     const activeSnapshot = snapshot ?? latestSnapshotRef.current;
     hasLocalSessionChangesRef.current = true;
 
-    if (!hasDraftMaterial(activeSnapshot.form, activeSnapshot.attachments)) {
+    if (!hasComposeContent({ ...activeSnapshot.form, body: composeBodyWithQuotedContent(activeSnapshot.form.body, activeSnapshot.quoted) }) && activeSnapshot.attachments.length === 0) {
       useComposeDraftStore.getState().clearDraft(draftKey);
       setDraftStatus(createDraftStatus('idle', reason === 'close' ? '空白草稿已清理。' : '等待修改'));
       setBaselineState(activeSnapshot.form);
       setBaselineAttachmentSignature(buildAttachmentSignature(activeSnapshot.attachments));
       setBaselineIdentityId(activeSnapshot.identityId);
-      return false;
+
+      if (serverDraftIdRef.current) {
+        if (reason === 'close') {
+          await queueServerDraftDestroy();
+        } else {
+          void queueServerDraftDestroy();
+        }
+      }
+
+      return 'empty' as const;
     }
 
     setDraftStatus(createDraftStatus('saving', reason === 'blur' ? '字段失焦后已触发保存…' : '草稿保存中…'));
-    useComposeDraftStore.getState().saveDraft(draftKey, {
-      accountId: latestAccountIdRef.current,
-      attachments: toStoredAttachments(activeSnapshot.attachments),
-      form: activeSnapshot.form,
-      identityId: activeSnapshot.identityId,
-      intent: latestRouteStateRef.current.intent,
-      messageId: latestRouteStateRef.current.messageId,
-      returnTo: latestRouteStateRef.current.returnTo,
-      threadId: latestRouteStateRef.current.threadId,
-      updatedAt: Date.now(),
-    });
+    storeDraftLocally(activeSnapshot);
     setBaselineState(activeSnapshot.form);
     setBaselineAttachmentSignature(buildAttachmentSignature(activeSnapshot.attachments));
     setBaselineIdentityId(activeSnapshot.identityId);
+
+    if (reason === 'close') {
+      const remoteSaved = await queueServerDraftSave(activeSnapshot);
+
+      if (!remoteSaved) {
+        return 'failed' as const;
+      }
+    } else {
+      void queueServerDraftSave(activeSnapshot);
+    }
+
     setDraftStatus(createDraftStatus('saved', reason === 'close' ? '草稿已暂存，本次关闭不会丢失输入内容。' : '草稿已自动保存。'));
-    return true;
-  }, [draftKey]);
+    return 'saved' as const;
+  }, [draftKey, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
 
   useEffect(() => {
     if (!isDirty || isSending) {
@@ -450,22 +623,23 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   useEffect(() => () => {
     const latestSnapshot = latestSnapshotRef.current;
 
-    if (hasSentRef.current || !hasDraftMaterial(latestSnapshot.form, latestSnapshot.attachments)) {
+    if (hasSentRef.current) {
       return;
     }
 
-    useComposeDraftStore.getState().saveDraft(draftKey, {
-      accountId: latestAccountIdRef.current,
-      attachments: toStoredAttachments(latestSnapshot.attachments),
-      form: latestSnapshot.form,
-      identityId: latestSnapshot.identityId,
-      intent: latestRouteStateRef.current.intent,
-      messageId: latestRouteStateRef.current.messageId,
-      returnTo: latestRouteStateRef.current.returnTo,
-      threadId: latestRouteStateRef.current.threadId,
-      updatedAt: Date.now(),
-    });
-  }, [draftKey]);
+    if (!hasComposeContent({ ...latestSnapshot.form, body: composeBodyWithQuotedContent(latestSnapshot.form.body, latestSnapshot.quoted) }) && latestSnapshot.attachments.length === 0) {
+      useComposeDraftStore.getState().clearDraft(draftKey);
+
+      if (serverDraftIdRef.current) {
+        void queueServerDraftDestroy(true);
+      }
+
+      return;
+    }
+
+    storeDraftLocally(latestSnapshot);
+    void queueServerDraftSave(latestSnapshot, true);
+  }, [draftKey, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
 
   const updateField = <Key extends keyof ComposeFormState>(key: Key, value: ComposeFormState[Key]) => {
     hasLocalSessionChangesRef.current = true;
@@ -487,11 +661,18 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   };
 
   const handleFieldBlur = () => {
-    persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'blur');
+    void persistDraft({ attachments, form: formState, identityId: selectedIdentityId, quoted: quotedContent }, 'blur');
   };
 
-  const saveDraftAndClose = () => {
-    const saved = persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'close');
+  const saveDraftAndClose = async () => {
+    const result = await persistDraft({ attachments, form: formState, identityId: selectedIdentityId, quoted: quotedContent }, 'close');
+    const saved = result === 'saved';
+
+    if (result === 'failed') {
+      setActionState({ kind: 'warning', message: '草稿保存失败，当前内容仍保留在本地。' });
+      return;
+    }
+
     setActionState(saved ? { kind: 'saved', message: '草稿已暂存，本次关闭不会丢失输入内容。' } : { kind: 'info', message: '当前草稿为空，已直接关闭。' });
 
     if (saved) {
@@ -560,7 +741,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       }
     }
 
-    persistDraft({ attachments: latestSnapshotRef.current.attachments, form: latestSnapshotRef.current.form, identityId: latestSnapshotRef.current.identityId }, 'autosave');
+    void persistDraft({ attachments: latestSnapshotRef.current.attachments, form: latestSnapshotRef.current.form, identityId: latestSnapshotRef.current.identityId, quoted: latestSnapshotRef.current.quoted }, 'autosave');
   };
 
   const handleSend = async () => {
@@ -598,19 +779,23 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     setIsSending(true);
     setActionState({ kind: 'info', message: '正在提交到上游邮箱服务…' });
 
-    const result = await submitComposeMessage({ accountId: accountId as string, attachments, client, form: formState, identity: selectedIdentity, mailboxRoleState });
+    const result = await submitComposeMessage({ accountId: accountId as string, attachments, client, form: { ...formState, body: composeBodyWithQuotedContent(formState.body, quotedContent) }, identity: selectedIdentity, mailboxRoleState });
 
     setIsSending(false);
 
     if (result.kind === 'failure') {
       setSendFailure(result.failure);
       setActionState({ kind: 'warning', message: result.failure.message });
-      persistDraft({ attachments, form: formState, identityId: selectedIdentityId }, 'failure');
+      void persistDraft({ attachments, form: formState, identityId: selectedIdentityId, quoted: quotedContent }, 'failure');
       return;
     }
 
     hasSentRef.current = true;
+    if (serverDraftIdRef.current && accountId) {
+      await queueServerDraftDestroy();
+    }
     useComposeDraftStore.getState().clearDraft(draftKey);
+    serverDraftIdRef.current = null;
     setBaselineState(formState);
     setBaselineAttachmentSignature(buildAttachmentSignature(attachments));
     setBaselineIdentityId(selectedIdentityId);
@@ -631,7 +816,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     if (withCommand && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      saveDraftAndClose();
+      void saveDraftAndClose();
     }
   };
 
@@ -743,11 +928,21 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
                 data-testid="compose-body"
                 onBlur={handleFieldBlur}
                 onChange={(event) => updateField('body', event.target.value)}
-                placeholder="纯文本写作区。回复与转发会把引用内容放在当前输入区域下方。"
+                placeholder="纯文本写作区。引用原文会单独显示在下方，只读且会在保存/发送时自动拼回正文。"
                 ref={bodyRef}
                 value={formState.body}
               />
             </label>
+
+            {quotedContent ? (
+              <section className="mt-4 rounded-[24px] border border-dashed border-line/80 bg-canvas/58 p-4" data-testid="compose-quoted-block">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-[11px] uppercase tracking-[0.28em] text-accent/80">只读引用</span>
+                  <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">发送/暂存时自动附带</span>
+                </div>
+                <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-line/70 bg-panel/72 px-4 py-4 text-sm leading-7 text-muted" data-testid="compose-quoted-content">{quotedContent.body}</pre>
+              </section>
+            ) : null}
 
             <section className="mt-4 rounded-[24px] border border-line/80 bg-canvas/62 p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -788,7 +983,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
               <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">Ctrl / Cmd + Enter 发送</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button aria-keyshortcuts="Control+S Meta+S" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent sm:flex-none" data-testid="compose-save-close" onClick={saveDraftAndClose} type="button">
+              <button aria-keyshortcuts="Control+S Meta+S" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent sm:flex-none" data-testid="compose-save-close" onClick={() => { void saveDraftAndClose(); }} type="button">
                 暂存并关闭
               </button>
               <button aria-keyshortcuts="Control+Enter Meta+Enter" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60 sm:flex-none" data-testid="compose-send" disabled={isSending} onClick={() => { void handleSend(); }} type="button">

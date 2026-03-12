@@ -154,6 +154,8 @@ describe('app-shell', () => {
     expect(isProtectedMailboxPath('/mail/inbox')).toBe(true);
     expect(isProtectedMailboxPath('/mail/search')).toBe(true);
     expect(isProtectedMailboxPath('/login')).toBe(false);
+    expect(toLoginRedirect('/login')).toBe('/login?next=%2Fmail%2Finbox');
+    expect(toLoginRedirect('/mail')).toBe('/login?next=%2Fmail');
     expect(toLoginRedirect('/mail/inbox')).toBe('/login?next=%2Fmail%2Finbox');
   });
 

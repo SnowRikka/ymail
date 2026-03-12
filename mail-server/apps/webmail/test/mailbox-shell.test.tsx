@@ -58,10 +58,6 @@ vi.mock('@/components/search/global-search-form', () => ({
   GlobalSearchForm: () => <form data-testid="global-search" />,
 }));
 
-vi.mock('@/components/system/realtime-status', () => ({
-  RealtimeStatus: ({ state }: { readonly state: { readonly statusLabel: string } }) => <span data-testid="sync-status">{state.statusLabel}</span>,
-}));
-
 vi.mock('@/lib/jmap/provider', () => ({
   useJmapBootstrap: vi.fn(),
   useJmapClient: vi.fn(),
@@ -242,10 +238,20 @@ describe('mailbox-shell', () => {
     await renderShell();
 
     expect(screen.getByTestId('mailbox-sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '跳到系统邮箱' })).toHaveAttribute('href', '#mail-sidebar');
+    expect(screen.queryByRole('link', { name: /邮箱导航/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: '系统邮箱' })).toBeInTheDocument();
     expect(screen.getByTestId('mailbox-item-inbox-id')).toHaveTextContent('4');
-    expect(screen.getByTestId('mailbox-item-project-root')).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByTestId('account-switcher')).toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-item-project-root')).not.toBeInTheDocument();
+    expect(screen.queryByText('自定义')).not.toBeInTheDocument();
+    expect(screen.queryByText('黑曜工作台')).not.toBeInTheDocument();
+    expect(screen.getByText('Primary account')).toBeInTheDocument();
+    expect(screen.queryByLabelText('切换账号')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+\s*个账号/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.getByTestId('logout-button')).toBeInTheDocument();
     expect(screen.getByTestId('thread-row-thread-project-1')).toBeInTheDocument();
   });
 
@@ -267,7 +273,8 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
-    expect(screen.getByTestId('account-switcher')).toHaveValue('primary');
+    expect(screen.getByText('Primary account')).toBeInTheDocument();
+    expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Projects' })).toBeInTheDocument();
     expect(screen.queryByText('载入邮箱')).not.toBeInTheDocument();
   });
@@ -278,7 +285,8 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
-    expect(screen.getByTestId('account-switcher')).toHaveValue('primary');
+    expect(screen.getByText('Primary account')).toBeInTheDocument();
+    expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: '收件箱' })).toBeInTheDocument();
   });
 
@@ -288,7 +296,8 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
-    expect(screen.getByTestId('account-switcher')).toHaveValue('shared');
+    expect(screen.getByText(/Shared ops/)).toBeInTheDocument();
+    expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('new-mail-button'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=shared'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));

@@ -293,6 +293,10 @@ function renderShell() {
   );
 }
 
+function expectShellSyncChromeAbsent() {
+  expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
+}
+
 beforeEach(() => {
   mockPathname = '/mail/inbox';
   mockSearch = 'accountId=primary&mailboxId=inbox-id';
@@ -337,7 +341,7 @@ afterEach(() => {
 });
 
 describe('realtime-sync', () => {
-  it('degrades none capability to polling and keeps visible sync status', async () => {
+  it('degrades none capability to polling without rendering shell sync chrome', async () => {
     const versionRef = { current: 1 as const };
     const client = createMockClient(versionRef);
 
@@ -352,7 +356,8 @@ describe('realtime-sync', () => {
 
     renderShell();
 
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询同步正常'));
+    await waitFor(() => expect(screen.getByTestId('thread-row-thread-1')).toBeInTheDocument());
+    expectShellSyncChromeAbsent();
 
     intervalHandler?.();
 
@@ -394,7 +399,7 @@ describe('realtime-sync', () => {
       source?.emitOpen();
     });
 
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('事件流同步正常'));
+    expectShellSyncChromeAbsent();
     expect(source?.url).toBe('/api/realtime/stream');
     expect(source?.options).toEqual({ withCredentials: true });
     expect(MockWebSocket.instances).toHaveLength(0);
@@ -406,9 +411,9 @@ describe('realtime-sync', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('thread-row-thread-2')).toBeInTheDocument();
-      expect(screen.getByText('未读 2')).toBeInTheDocument();
-      expect(screen.getByTestId('live-update-toast')).toHaveTextContent('已完成断线后的权威对账。');
+      expect(screen.getByText('2 未读')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('live-update-toast')).not.toBeInTheDocument();
     expect(client.mailbox.changes).toHaveBeenCalled();
     expect(client.email.queryChanges).toHaveBeenCalled();
     expect(client.thread.changes).toHaveBeenCalled();
@@ -440,15 +445,15 @@ describe('realtime-sync', () => {
     act(() => {
       source?.emitOpen();
     });
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('事件流同步正常'));
+    expectShellSyncChromeAbsent();
 
     act(() => {
       source?.emitError();
     });
 
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询同步正常'));
+    await waitFor(() => expect(source?.closeCount).toBe(1));
+    expectShellSyncChromeAbsent();
     expect(screen.queryByTestId('sync-reconnecting')).not.toBeInTheDocument();
-    expect(source?.closeCount).toBe(1);
 
     act(() => {
       window.dispatchEvent(new Event('online'));
@@ -477,11 +482,13 @@ describe('realtime-sync', () => {
 
     renderShell();
 
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询同步正常'));
+    await waitFor(() => expect(screen.getByTestId('thread-row-thread-1')).toBeInTheDocument());
+    expectShellSyncChromeAbsent();
 
     intervalHandler?.();
 
-    await waitFor(() => expect(screen.getByTestId('sync-error')).toHaveTextContent('sync failed'));
+    await waitFor(() => expect(client.mailbox.changes).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('sync-error')).not.toBeInTheDocument();
   });
 
   it('falls back to polling when same-origin realtime discovery fails', async () => {
@@ -503,7 +510,8 @@ describe('realtime-sync', () => {
 
     renderShell();
 
-    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('轮询同步正常'));
+    await waitFor(() => expect(screen.getByTestId('thread-row-thread-1')).toBeInTheDocument());
+    expectShellSyncChromeAbsent();
     expect(MockEventSource.instances).toHaveLength(0);
     expect(MockWebSocket.instances).toHaveLength(0);
   });

@@ -9,12 +9,10 @@ import { LogoutButton } from '@/components/mail/logout-button';
 import { ThreadListPanel } from '@/components/mail/thread-list-panel';
 import { GlobalSearchForm } from '@/components/search/global-search-form';
 import { SearchResultsPanel } from '@/components/search/search-results-panel';
-import { RealtimeStatus } from '@/components/system/realtime-status';
 import type { SafeSessionSummary } from '@/lib/auth/types';
 import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
-import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel, toMailboxAccountOptions } from '@/lib/jmap/mailbox-shell';
-import { buildSearchRouteHref, resolveSearchRouteState } from '@/lib/jmap/search';
+import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel } from '@/lib/jmap/mailbox-shell';
 import type { JmapMailboxObject } from '@/lib/jmap/types';
 import { useRealtimeSync } from '@/lib/realtime/sync';
 import { cn } from '@/lib/utils';
@@ -102,7 +100,6 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
 
   const bootstrapQuery = useJmapBootstrap(isHydrated);
   const readySession = bootstrapQuery.data?.status === 'ready' ? bootstrapQuery.data.session : null;
-  const accountOptions = readySession ? toMailboxAccountOptions(readySession) : [];
   const accountIdFromUrl = searchParams.get('accountId');
   const searchMailboxId = searchParams.get('mailboxId');
   const activeAccountId = readySession ? resolveMailboxAccountId(readySession, accountIdFromUrl) : null;
@@ -140,34 +137,18 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
       })
     : null;
 
-  const mailboxCount = viewModel?.mailboxItems.length ?? 0;
   const activeMailbox = viewModel?.mailboxItems.find((mailbox) => mailbox.isActive) ?? null;
   const topline = viewModel?.activeMailboxRole ? `${formatMailboxRoleLabel(viewModel.activeMailboxRole)} · ${sectionTitle}` : sectionTitle;
   const shellErrorMessage = mailboxQuery.isError ? (mailboxQuery.error instanceof Error ? mailboxQuery.error.message : '请稍后重试。') : null;
   const isShellLoading = bootstrapQuery.isLoading || mailboxQuery.isLoading;
-  const searchRouteState = resolveSearchRouteState(searchParams);
-  const realtimeState = useRealtimeSync({
+  const accountDisplayName = viewModel?.activeAccountLabel ?? sessionSummary?.username ?? '载入中';
+  const accountAvatarLabel = accountDisplayName.trim().charAt(0).toUpperCase() || '…';
+
+  useRealtimeSync({
     activeAccountId,
     activeMailboxId: activeMailbox?.id ?? null,
     enabled: isHydrated && shellErrorMessage === null,
   });
-
-  const handleAccountChange = (nextAccountId: string) => {
-    if (pathname === '/mail/search') {
-      router.push(
-        buildSearchRouteHref({
-          ...searchRouteState,
-          accountId: nextAccountId,
-          mailboxId: null,
-          page: 1,
-          selectedThreadId: null,
-        }),
-      );
-      return;
-    }
-
-    router.push(`/mail/inbox?accountId=${encodeURIComponent(nextAccountId)}`);
-  };
 
   const listPaneProps: MailShellListPaneProps = {
     activeAccountId,
@@ -210,7 +191,7 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
           跳到阅读器
         </a>
         <a className="sr-only rounded-full border border-accent/40 bg-panel/96 px-4 py-2 text-sm text-ink shadow-shell pointer-events-auto focus:not-sr-only" href="#mail-sidebar">
-          跳到邮箱导航
+          跳到系统邮箱
         </a>
       </nav>
       <section className="shell-surface min-h-[calc(100vh-1rem)] rounded-[28px] border border-line/90 p-3 shadow-shell sm:min-h-[calc(100vh-1.5rem)] sm:rounded-[30px] lg:min-h-[calc(100vh-2.5rem)] lg:p-4">
@@ -219,8 +200,6 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.34em] text-accent/78">
                 <span>{eyebrow}</span>
-                <span className="h-1 w-1 rounded-full bg-accent/50" />
-                <span className="font-mono tracking-[0.24em] text-muted">黑曜工作台</span>
               </div>
               <div>
                 <h1 className="text-3xl font-semibold tracking-[-0.04em] text-ink lg:text-[2.5rem]">{readerTitle}</h1>
@@ -228,91 +207,47 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 lg:min-w-[300px] xl:max-w-[420px]">
-              <div className="rounded-[20px] border border-line/70 bg-canvas/70 px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] uppercase tracking-[0.28em] text-muted">当前账号</p>
-                    <p className="mt-2 text-sm font-medium text-ink">{viewModel?.activeAccountLabel ?? sessionSummary?.username ?? '载入中'}</p>
-                  </div>
-                  <span className="rounded-full border border-line/70 bg-panel/70 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-accent/90">
-                    {sessionSummary?.accountCount ?? viewModel?.accounts.length ?? 0} 个账号
-                  </span>
+            <div className="flex flex-col gap-3 lg:min-w-[300px] xl:max-w-[420px] xl:items-end">
+              <div className="flex flex-wrap items-center justify-end gap-3 rounded-[20px] border border-line/70 bg-canvas/70 px-3 py-3 text-right">
+                <div aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/12 font-mono text-sm uppercase tracking-[0.2em] text-accent">
+                  {accountAvatarLabel}
                 </div>
-                <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                  <label className="block text-xs text-muted" htmlFor="account-switcher">
-                    <span className="mb-2 block">切换账号</span>
-                    <select
-                      aria-label="切换账号"
-                      className="w-full rounded-2xl border border-line/80 bg-panel/90 px-4 py-3 text-sm text-ink outline-none ring-0 transition hover:border-accent/50 focus:border-accent"
-                      data-testid="account-switcher"
-                      disabled={!viewModel?.hasMultipleAccounts}
-                      id="account-switcher"
-                      onChange={(event) => handleAccountChange(event.target.value)}
-                      value={viewModel?.activeAccountId ?? ''}
-                    >
-                      {(viewModel?.accounts ?? accountOptions).map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {account.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="flex items-center gap-2 lg:justify-end">
-                    <button
-                      aria-label="新建邮件"
-                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                      data-testid="new-mail-button"
-                      onClick={openFreshCompose}
-                      type="button"
-                    >
-                      <ComposeIcon className="h-4 w-4" />
-                      新建邮件
-                    </button>
-                    <LogoutButton />
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-                  <span>{viewModel?.username ?? sessionSummary?.username ?? '匿名会话'}</span>
-                  <span className="h-1 w-1 rounded-full bg-line" />
-                  <span>未读 {viewModel?.totalUnread ?? 0}</span>
-                  <span className="h-1 w-1 rounded-full bg-line" />
-                  <span>{mailboxCount} 个邮箱</span>
-                  <span className="h-1 w-1 rounded-full bg-line" />
-                  <RealtimeStatus state={realtimeState} />
+                <div className="min-w-0">
+                  <p className="text-[11px] uppercase tracking-[0.28em] text-muted">当前账号</p>
+                  <p className="mt-1 truncate text-sm font-medium text-ink">{accountDisplayName}</p>
                 </div>
               </div>
 
-              <GlobalSearchForm accountId={activeAccountId} mailboxId={activeMailbox?.id ?? null} mailboxName={activeMailbox?.name ?? null} />
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  aria-label="新建邮件"
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  data-testid="new-mail-button"
+                  onClick={openFreshCompose}
+                  type="button"
+                >
+                  <ComposeIcon className="h-4 w-4" />
+                  新建邮件
+                </button>
+                <LogoutButton />
+              </div>
+
+              <div className="w-full xl:max-w-[420px]">
+                <GlobalSearchForm accountId={activeAccountId} mailboxId={activeMailbox?.id ?? null} mailboxName={activeMailbox?.name ?? null} />
+              </div>
             </div>
           </div>
         </header>
 
         <div className="mt-3 grid gap-3 lg:grid-cols-[272px_minmax(320px,380px)_minmax(0,1fr)]" data-testid="mail-layout">
           <aside
-            aria-labelledby="mail-sidebar-title"
+            aria-label="系统邮箱"
             className="stage-reveal order-3 rounded-[24px] border border-line/80 bg-panel/94 p-3 lg:order-none"
             data-testid="mailbox-sidebar"
             id="mail-sidebar"
             style={{ ['--stage-delay' as string]: '0.08s' }}
           >
-            <div className="rounded-[20px] border border-line/70 bg-canvas/80 px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-muted">邮箱导航</p>
-                  <p className="mt-2 text-sm font-semibold text-ink">{viewModel?.activeAccountLabel ?? '邮箱导航'}</p>
-                </div>
-                <span className="rounded-full border border-line/70 bg-panel/70 px-2.5 py-1 font-mono text-[10px] text-accent/90">
-                  {mailboxCount}
-                </span>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-4">
-              <MailboxSection heading="系统邮箱" items={viewModel?.systemItems ?? []} titleId="mail-sidebar-title" />
-              <MailboxSection emptyLabel="暂无自定义文件夹" heading="自定义" items={viewModel?.customItems ?? []} />
-            </div>
+            <MailboxSection heading="系统邮箱" items={viewModel?.systemItems ?? []} titleId="mail-sidebar-title" />
           </aside>
 
           <section aria-label={listPaneLabel} className="stage-reveal order-1 rounded-[24px] border border-line/80 bg-panel/94 p-3 lg:order-none" data-testid={listPaneTestId} id="mail-thread-list" style={{ ['--stage-delay' as string]: '0.14s' }}>

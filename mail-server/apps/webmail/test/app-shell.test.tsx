@@ -165,9 +165,20 @@ describe('app-shell', () => {
     expect(screen.getByTestId('app-shell')).toBeInTheDocument();
     expect(screen.getByTestId('mail-layout')).toBeInTheDocument();
     expect(screen.getByTestId('mailbox-sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '跳到系统邮箱' })).toHaveAttribute('href', '#mail-sidebar');
+    expect(screen.queryByRole('link', { name: /邮箱导航/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('mailbox-item-inbox-id')).toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-item-custom-id')).not.toBeInTheDocument();
+    expect(screen.queryByText('自定义')).not.toBeInTheDocument();
     expect(screen.getByTestId('thread-list')).toBeInTheDocument();
     expect(screen.getByTestId('reader-pane')).toBeInTheDocument();
+    expect(screen.getByText('Primary')).toBeInTheDocument();
+    expect(screen.queryByLabelText('切换账号')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+\s*个账号/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.getByTestId('logout-button')).toBeInTheDocument();
   });
 
   it('renders login placeholder safely', () => {

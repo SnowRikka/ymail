@@ -6,6 +6,7 @@ import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 import type { ThreadListRow } from '@/lib/jmap/thread-list';
 
 const KEYWORD_FLAGGED = '$flagged';
+const KEYWORD_DRAFT = '$draft';
 const KEYWORD_JUNK = '$junk';
 const KEYWORD_NOT_JUNK = '$notjunk';
 const KEYWORD_SEEN = '$seen';
@@ -22,6 +23,7 @@ export interface MailActionThreadRef {
 
 export interface MailActionMailboxRoleTargets {
   readonly archiveId: string | null;
+  readonly draftsId: string | null;
   readonly inboxId: string | null;
   readonly junkId: string | null;
   readonly trashId: string | null;
@@ -110,10 +112,15 @@ function resolveTargetMailboxId(action: MailActionRequest, currentMailboxId: str
 export function resolveMailboxRoleTargets(mailboxes: readonly MailboxNavigationItem[]): MailActionMailboxRoleTargets {
   return {
     archiveId: mailboxes.find((mailbox) => mailbox.role === 'archive')?.id ?? null,
+    draftsId: mailboxes.find((mailbox) => mailbox.role === 'drafts')?.id ?? null,
     inboxId: mailboxes.find((mailbox) => mailbox.role === 'inbox')?.id ?? null,
     junkId: mailboxes.find((mailbox) => mailbox.role === 'junk')?.id ?? null,
     trashId: mailboxes.find((mailbox) => mailbox.role === 'trash')?.id ?? null,
   };
+}
+
+function isDraftMailboxThread(thread: MailActionThreadRef, roleTargets: MailActionMailboxRoleTargets) {
+  return !!roleTargets.draftsId && isSuccessfulMailboxId(thread.mailboxIds[roleTargets.draftsId]);
 }
 
 export function createMailActionLabel(action: MailActionRequest) {
@@ -269,8 +276,12 @@ export function buildMailActionPatch(input: {
 
       const currentMailboxIds = withoutMailboxId(input.thread.mailboxIds, input.currentMailboxId);
       const nextMailboxIds = withMailboxId(currentMailboxIds, targetMailboxId);
+      const clearsDraftSemantics = input.action.type === 'delete' && isDraftMailboxThread(input.thread, input.roleTargets);
+      const draftMailboxId = clearsDraftSemantics ? input.roleTargets.draftsId : null;
+
       return {
         ...toMailboxIdsPatch(nextMailboxIds),
+        ...(draftMailboxId ? { [`mailboxIds/${draftMailboxId}`]: null, [`keywords/${KEYWORD_DRAFT}`]: null } : {}),
         ...(input.action.type === 'spam' ? { [`keywords/${KEYWORD_JUNK}`]: true, [`keywords/${KEYWORD_NOT_JUNK}`]: null } : {}),
         ...(input.action.type === 'not-spam' ? { [`keywords/${KEYWORD_JUNK}`]: null, [`keywords/${KEYWORD_NOT_JUNK}`]: true } : {}),
       };

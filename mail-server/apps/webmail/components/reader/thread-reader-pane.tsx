@@ -49,6 +49,10 @@ function clearThreadSelectionHref(pathname: string, searchParams: URLSearchParam
   return query.length > 0 ? `${pathname}?${query}` : pathname;
 }
 
+function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
+  return role === 'drafts' || role === 'trash';
+}
+
 function resolveCurrentMailboxId(pathname: string, searchParams: URLSearchParams, mailboxItems: readonly MailboxNavigationItem[], roleTargets: ReturnType<typeof resolveMailboxRoleTargets>) {
   const queryMailboxId = searchParams.get('mailboxId');
   if (queryMailboxId && mailboxItems.some((mailbox) => mailbox.id === queryMailboxId)) {
@@ -509,6 +513,8 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
   const readerCanMove = currentMailboxId !== null && roleTargets.archiveId !== null;
   const readerCanDelete = currentMailboxId !== null && roleTargets.trashId !== null;
   const readerCanSpam = currentMailboxId !== null && roleTargets.junkId !== null;
+  const currentMailboxRole = resolvedMailboxItems.find((mailbox) => mailbox.id === currentMailboxId)?.role ?? null;
+  const deleteOnlyReaderActions = isDeleteOnlyMailboxRole(currentMailboxRole);
 
   return (
     <div className="space-y-4">
@@ -533,18 +539,21 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
               readLabel={displayedThread.isUnread ? '标记已读' : '标记未读'}
               starLabel={displayedThread.isFlagged ? '取消星标' : '加星'}
               testIdPrefix="reader"
+              visibility={deleteOnlyReaderActions ? { archive: false, markRead: false, spam: false, star: false } : undefined}
             />
-            <div className="flex flex-wrap gap-2">
-              <Link aria-label="回复当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply" href={composeReplyHref}>
-                回复
-              </Link>
-              <Link aria-label="回复所有收件人" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply-all" href={composeReplyAllHref}>
-                全部回复
-              </Link>
-              <Link aria-label="转发当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-accent/40 bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/90" data-testid="reader-forward" href={composeForwardHref}>
-                转发
-              </Link>
-            </div>
+            {deleteOnlyReaderActions ? null : (
+              <div className="flex flex-wrap gap-2">
+                <Link aria-label="回复当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply" href={composeReplyHref}>
+                  回复
+                </Link>
+                <Link aria-label="回复所有收件人" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:text-accent" data-testid="reader-reply-all" href={composeReplyAllHref}>
+                  全部回复
+                </Link>
+                <Link aria-label="转发当前线程" className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-accent/40 bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/90" data-testid="reader-forward" href={composeForwardHref}>
+                  转发
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       </div>

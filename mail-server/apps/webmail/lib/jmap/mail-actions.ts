@@ -68,6 +68,14 @@ export interface MailActionQuerySyncInput {
   readonly queryClient: QueryClient;
 }
 
+export function isDeleteOnlyMailboxRole(role: MailboxNavigationItem['role']) {
+  return role === 'drafts' || role === 'sent' || role === 'trash';
+}
+
+export function shouldHideSpamActionForMailboxRole(role: MailboxNavigationItem['role']) {
+  return isDeleteOnlyMailboxRole(role) || role === 'junk';
+}
+
 function isSuccessfulMailboxId(value: boolean | undefined) {
   return value === true;
 }
@@ -94,6 +102,10 @@ function withoutMailboxId(mailboxIds: Readonly<Record<string, boolean>>, mailbox
 
 function isPermanentDeleteAction(action: MailActionRequest, currentMailboxId: string, roleTargets: MailActionMailboxRoleTargets) {
   return action.type === 'delete' && roleTargets.trashId !== null && currentMailboxId === roleTargets.trashId;
+}
+
+function clearsJunkSemantics(action: MailActionRequest, currentMailboxId: string, roleTargets: MailActionMailboxRoleTargets) {
+  return action.type === 'delete' && roleTargets.junkId !== null && currentMailboxId === roleTargets.junkId;
 }
 
 function resolveTargetMailboxId(action: MailActionRequest, currentMailboxId: string, roleTargets: MailActionMailboxRoleTargets) {
@@ -286,10 +298,12 @@ export function buildMailActionPatch(input: {
       const nextMailboxIds = withMailboxId(currentMailboxIds, targetMailboxId);
       const clearsDraftSemantics = input.action.type === 'delete' && isDraftMailboxThread(input.thread, input.roleTargets);
       const draftMailboxId = clearsDraftSemantics ? input.roleTargets.draftsId : null;
+      const junkMailboxId = clearsJunkSemantics(input.action, input.currentMailboxId, input.roleTargets) ? input.roleTargets.junkId : null;
 
       return {
         ...toMailboxIdsPatch(nextMailboxIds),
         ...(draftMailboxId ? { [`mailboxIds/${draftMailboxId}`]: null, [`keywords/${KEYWORD_DRAFT}`]: null } : {}),
+        ...(junkMailboxId ? { [`mailboxIds/${junkMailboxId}`]: null, [`keywords/${KEYWORD_JUNK}`]: null, [`keywords/${KEYWORD_NOT_JUNK}`]: true } : {}),
         ...(input.action.type === 'spam' ? { [`keywords/${KEYWORD_JUNK}`]: true, [`keywords/${KEYWORD_NOT_JUNK}`]: null } : {}),
         ...(input.action.type === 'not-spam' ? { [`keywords/${KEYWORD_JUNK}`]: null, [`keywords/${KEYWORD_NOT_JUNK}`]: true } : {}),
       };

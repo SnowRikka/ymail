@@ -126,6 +126,32 @@ function expectDeleteOnlyBulkActions() {
   expect(screen.queryByTestId('action-spam')).not.toBeInTheDocument();
 }
 
+function expectJunkRowActions(threadId: string) {
+  expect(screen.getByTestId(`thread-row-read-${threadId}`)).toBeInTheDocument();
+  expect(screen.getByTestId(`thread-row-star-${threadId}`)).toBeInTheDocument();
+  expect(screen.getByTestId(`thread-row-archive-${threadId}`)).toBeInTheDocument();
+  expect(screen.getByTestId(`thread-row-delete-${threadId}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`thread-row-spam-${threadId}`)).not.toBeInTheDocument();
+}
+
+function expectJunkReaderActions() {
+  expect(screen.getByTestId('reader-action-mark-read')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-star')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-move')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-delete')).toBeInTheDocument();
+  expect(screen.queryByTestId('reader-action-spam')).not.toBeInTheDocument();
+  expect(screen.getByTestId('reader-reply')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-forward')).toBeInTheDocument();
+}
+
+function expectJunkBulkActions() {
+  expect(screen.getByTestId('action-mark-read')).toBeInTheDocument();
+  expect(screen.getByTestId('action-star')).toBeInTheDocument();
+  expect(screen.getByTestId('action-move')).toBeInTheDocument();
+  expect(screen.getByTestId('action-delete')).toBeInTheDocument();
+  expect(screen.queryByTestId('action-spam')).not.toBeInTheDocument();
+}
+
 function createReaderThread(overrides?: Partial<{ isFlagged: boolean; isUnread: boolean; mailboxIds: Record<string, boolean>; subject: string }>) {
   return {
     accountId: 'primary',
@@ -359,6 +385,7 @@ describe('mail-actions', () => {
     const row = createRow('thread-1');
     const draftRow = createRow('draft-thread', { mailboxIds: { 'drafts-id': true } });
     const mixedDraftRow = createRow('mixed-draft-thread', { mailboxIds: { 'drafts-id': true, 'inbox-id': true } });
+    const junkRow = createRow('junk-thread', { mailboxIds: { 'junk-id': true } });
     const trashRow = createRow('trash-thread', { mailboxIds: { 'trash-id': true } });
 
     expect(buildMailActionPatch({ action: { type: 'mark-read' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({ 'keywords/$seen': true });
@@ -372,6 +399,12 @@ describe('mail-actions', () => {
     expect(buildMailActionPatch({ action: { type: 'delete' }, currentMailboxId: 'inbox-id', roleTargets, thread: mixedDraftRow })).toEqual({
       'keywords/$draft': null,
       'mailboxIds/drafts-id': null,
+      'mailboxIds/trash-id': true,
+    });
+    expect(buildMailActionPatch({ action: { type: 'delete' }, currentMailboxId: 'junk-id', roleTargets, thread: junkRow })).toEqual({
+      'keywords/$junk': null,
+      'keywords/$notjunk': true,
+      'mailboxIds/junk-id': null,
       'mailboxIds/trash-id': true,
     });
     expect(buildMailActionPatch({ action: { type: 'delete' }, currentMailboxId: 'inbox-id', roleTargets, thread: row })).toEqual({ 'mailboxIds/trash-id': true });
@@ -476,6 +509,63 @@ describe('mail-actions', () => {
     }
   });
 
+  it('hides spam actions but keeps other row and bulk actions in junk mailbox', () => {
+    const mailbox = getMailboxByRole(mailboxItems, 'junk');
+    renderPanel(
+      { email: { set: vi.fn() } } as unknown as JmapClient,
+      [createRow('junk-thread', { mailboxIds: { 'junk-id': true } })],
+      vi.fn().mockResolvedValue(undefined),
+      mailbox,
+    );
+
+    expectJunkRowActions('junk-thread');
+    fireEvent.click(screen.getByTestId('thread-select-junk-thread'));
+    expectJunkBulkActions();
+  });
+
+  it('moves junk row deletes to trash while clearing junk semantics', async () => {
+    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { newState: string; updated?: Record<string, null> } } }>();
+    const refetch = vi.fn().mockResolvedValue(undefined);
+    const setEmail = vi.fn().mockReturnValue(deferred.promise);
+
+    renderPanel(
+      { email: { set: setEmail } } as unknown as JmapClient,
+      [createRow('junk-thread', { emailIds: ['junk-email-1', 'junk-email-2'], mailboxIds: { 'junk-id': true } })],
+      refetch,
+      getMailboxByRole(mailboxItems, 'junk'),
+    );
+
+    fireEvent.click(screen.getByTestId('thread-row-delete-junk-thread'));
+
+    await waitFor(() => {
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        update: {
+          'junk-email-1': {
+            'keywords/$junk': null,
+            'keywords/$notjunk': true,
+            'mailboxIds/junk-id': null,
+            'mailboxIds/trash-id': true,
+          },
+          'junk-email-2': {
+            'keywords/$junk': null,
+            'keywords/$notjunk': true,
+            'mailboxIds/junk-id': null,
+            'mailboxIds/trash-id': true,
+          },
+        },
+      });
+    });
+
+    deferred.resolve({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
+
+    await waitFor(() => {
+      expect(refetch).toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'junk-id'] });
+    });
+  });
+
   it('destroys trash row emails instead of patching them back to trash', async () => {
     const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { destroyed?: readonly string[]; newState: string } } }>();
     const refetch = vi.fn().mockResolvedValue(undefined);
@@ -566,6 +656,18 @@ describe('mail-actions', () => {
     }
   });
 
+  it('hides only spam on the reader action strip in junk mailbox', () => {
+    const mailbox = getMailboxByRole(mailboxItems, 'junk');
+    mockSearch = `accountId=primary&mailboxId=${mailbox.id}&threadId=thread-1`;
+
+    renderReader(
+      { email: { set: vi.fn() } } as unknown as JmapClient,
+      createReaderThread({ mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
+    );
+
+    expectJunkReaderActions();
+  });
+
   it('hides archive on row bulk and reader surfaces when archive mailbox is unavailable', () => {
     const mailboxItemsWithoutArchive = mailboxItems.filter((mailbox) => mailbox.role !== 'archive');
     const inboxMailbox = getMailboxByRole(mailboxItemsWithoutArchive, 'inbox');
@@ -646,6 +748,47 @@ describe('mail-actions', () => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'trash-id'] });
       expect(mockReplace).toHaveBeenCalledWith('/mail/inbox?accountId=primary&mailboxId=trash-id');
+    });
+  });
+
+  it('moves junk reader deletes to trash while clearing junk semantics', async () => {
+    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { newState: string; updated?: Record<string, null> } } }>();
+    const setEmail = vi.fn().mockReturnValue(deferred.promise);
+    mockSearch = 'accountId=primary&mailboxId=junk-id&threadId=thread-1';
+
+    renderReader(
+      { email: { set: setEmail } } as unknown as JmapClient,
+      createReaderThread({ mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
+    );
+
+    fireEvent.click(screen.getByTestId('reader-action-delete'));
+
+    await waitFor(() => {
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        update: {
+          'email-thread-1-1': {
+            'keywords/$junk': null,
+            'keywords/$notjunk': true,
+            'mailboxIds/junk-id': null,
+            'mailboxIds/trash-id': true,
+          },
+          'email-thread-1-2': {
+            'keywords/$junk': null,
+            'keywords/$notjunk': true,
+            'mailboxIds/junk-id': null,
+            'mailboxIds/trash-id': true,
+          },
+        },
+      });
+    });
+
+    deferred.resolve({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
+
+    await waitFor(() => {
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'junk-id'] });
+      expect(mockReplace).toHaveBeenCalledWith('/mail/inbox?accountId=primary&mailboxId=junk-id');
     });
   });
 

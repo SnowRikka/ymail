@@ -256,6 +256,19 @@ describe('search', () => {
     expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('query=contract+final'));
   });
 
+  it('submits the restyled top search bar from a mailbox route', async () => {
+    mockPathname = '/mail/inbox';
+    mockSearch = 'accountId=primary';
+    await renderSearchShell();
+
+    fireEvent.change(screen.getByTestId('global-search'), { target: { value: 'project alpha' } });
+    fireEvent.click(screen.getByTestId('search-submit'));
+
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/search?'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('accountId=primary'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('query=project+alpha'));
+  });
+
   it('renders a stable zero-result state', async () => {
     searchScenario = 'empty';
     installQueryMocks();

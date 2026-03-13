@@ -4,10 +4,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, parseComposeRecipients, parseComposeRouteState, validateComposeForm, type ComposeDraftRecord } from '@/lib/jmap/compose-core';
+import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, hydrateComposeServerDraft, parseComposeRecipients, parseComposeRouteState, validateComposeForm, type ComposeDraftRecord } from '@/lib/jmap/compose-core';
 import { queryReaderThread, type ReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
+import type { JmapEmailObject } from '@/lib/jmap/types';
 
 const LEGACY_NEW_DRAFT_KEY = 'new::primary::standalone-thread::latest-message';
 const mockPush = vi.fn();
@@ -65,6 +66,17 @@ function createClientMock() {
 
   return {
     email: {
+      get: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: {
+            accountId: 'primary',
+            list: [createServerDraftEmail()],
+            state: 'email-state',
+          },
+        },
+      }),
       set: vi.fn().mockImplementation(async (request: { create?: Record<string, unknown>; destroy?: readonly string[]; update?: Record<string, unknown> }) => {
         if (request.create?.['draft-email']) {
           createdCount += 1;
@@ -195,6 +207,22 @@ function createThread(): ReaderThread {
   };
 }
 
+function createServerDraftEmail(): JmapEmailObject {
+  return {
+    attachments: [{ blobId: 'blob-1', name: 'server-note.txt', partId: 'attachment-1', size: 12, type: 'text/plain' }],
+    bodyValues: {
+      'text-part': {
+        value: '服务器草稿正文',
+      },
+    },
+    from: [{ email: 'owner@example.com', name: 'Owner' }],
+    id: 'server-draft-1',
+    subject: '服务器草稿主题',
+    textBody: [{ partId: 'text-part', type: 'text/plain' }],
+    to: [{ email: 'alice@example.com', name: 'Alice' }, { email: 'bob@example.com' }],
+  };
+}
+
 beforeEach(() => {
   mockPush.mockReset();
   mockSearchParams = new URLSearchParams('intent=new&accountId=primary');
@@ -266,6 +294,21 @@ describe('compose-core', () => {
     expect(reply.quoted?.body).toContain('> 第一行');
   });
 
+  it('hydrates an existing server draft into editable compose state', () => {
+    const draft = hydrateComposeServerDraft(createServerDraftEmail());
+
+    expect(draft).toEqual({
+      attachments: [{ blobId: 'blob-1', errorMessage: null, name: 'server-note.txt', size: 12, status: 'uploaded', type: 'text/plain' }],
+      form: {
+        body: '服务器草稿正文',
+        subject: '服务器草稿主题',
+        to: 'Alice <alice@example.com>, bob@example.com',
+      },
+      identityEmail: 'owner@example.com',
+      serverDraftId: 'server-draft-1',
+    });
+  });
+
   it('builds forward prefills from reader metadata', () => {
     const thread = createThread();
     const forward = buildComposePrefill({ intent: 'forward', messageId: 'message-1', selfEmail: 'owner@example.com', thread });
@@ -295,6 +338,70 @@ describe('compose-core', () => {
     expect(screen.getByTestId('compose-quoted-content')).toHaveTextContent('第二行');
   });
 
+  it('loads a server draft route directly into the compose editor', async () => {
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1');
+    currentClient = createClientMock();
+    currentClient.identity.get.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        kind: 'success',
+        response: {
+          accountId: 'primary',
+          list: [
+            { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], state: 'identity-state', textSignature: null },
+            { email: 'owner@example.com', id: 'identity-1', name: 'Owner', replyTo: [], state: 'identity-state', textSignature: 'Regards' },
+          ],
+          state: 'identity-state',
+        },
+      },
+    });
+    mockedUseJmapClient.mockReturnValue(currentClient as never);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(currentClient.email.get).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'primary', ids: ['server-draft-1'] })));
+    await waitFor(() => expect(screen.getByTestId('identity-select')).toHaveValue('identity-1'));
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('Alice <alice@example.com>, bob@example.com'));
+
+    expect(screen.getByTestId('compose-subject')).toHaveValue('服务器草稿主题');
+    expect(screen.getByTestId('compose-body')).toHaveValue('服务器草稿正文');
+    expect(screen.getByText('server-note.txt')).toBeVisible();
+    expect(screen.getByTestId('draft-status')).toHaveTextContent(/已(载入服务器草稿|恢复 .* 暂存的草稿。)/);
+    expect(screen.queryByTestId('compose-quoted-block')).not.toBeInTheDocument();
+  });
+
+  it('defaults a fresh compose to the current account identity and keeps the draft-status row aligned', async () => {
+    currentClient = createClientMock();
+    currentClient.identity.get.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        kind: 'success',
+        response: {
+          accountId: 'primary',
+          list: [
+            { email: 'z-current@example.com', id: 'identity-current', name: 'Z Current', replyTo: [], state: 'identity-state', textSignature: null },
+            { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], state: 'identity-state', textSignature: null },
+          ],
+          state: 'identity-state',
+        },
+      },
+    });
+    mockedUseJmapClient.mockReturnValue(currentClient as never);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'global-login@example.com' }} />);
+
+    const select = await screen.findByTestId('identity-select');
+    await waitFor(() => expect(select).toHaveValue('identity-current'));
+    expect(select).not.toHaveValue('');
+    expect(select).toHaveTextContent('Z Current <z-current@example.com>');
+
+    expect(screen.getByText('草稿状态')).toBeVisible();
+    expect(screen.getByTestId('draft-status-field').className).toContain('flex');
+    expect(screen.getByTestId('draft-status-field').className).toContain('items-center');
+    expect(screen.getByTestId('draft-status-field').className).toContain('justify-between');
+    expect(screen.getByTestId('draft-status')).toHaveTextContent('等待修改');
+  });
+
   it('registers an unsaved-change beforeunload guard', () => {
     renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
 
@@ -308,6 +415,34 @@ describe('compose-core', () => {
 
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('removes explanatory compose header copy and keeps the simplified autosave label', async () => {
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(screen.getByTestId('compose-form')).toBeInTheDocument());
+
+    expect(screen.getByRole('heading', { level: 2, name: '新建邮件' })).toBeVisible();
+    expect(screen.getByText('自动暂存')).toBeVisible();
+    expect(screen.getByText('Ctrl / Cmd + Enter 发送')).toBeVisible();
+    expect(screen.queryByText('写信工作台')).not.toBeInTheDocument();
+    expect(screen.queryByText('纯文本写信')).not.toBeInTheDocument();
+    expect(screen.queryByText('12 秒自动暂存')).not.toBeInTheDocument();
+    expect(screen.queryByText('同源附件上传')).not.toBeInTheDocument();
+    expect(screen.queryByText('纯文本工作台现已支持身份切换、自动保存、附件上传与真实发送。')).not.toBeInTheDocument();
+    expect(screen.queryByText('空白草稿')).not.toBeInTheDocument();
+    expect(screen.queryByText('已同步')).not.toBeInTheDocument();
+    expect(screen.queryByText('返回收件箱')).not.toBeInTheDocument();
+    expect(screen.queryByText('返回线程')).not.toBeInTheDocument();
+    expect(screen.getByText('附件')).toBeVisible();
+    expect(screen.getByRole('button', { name: '选择附件' })).toBeVisible();
+    expect(screen.getByTestId('attachment-progress')).toHaveTextContent('尚未添加附件。');
+    expect(screen.getByTestId('draft-status')).toBeVisible();
+    expect(screen.getByTestId('compose-save-close')).toBeVisible();
+    expect(screen.getByTestId('compose-send')).toBeVisible();
+    expect(screen.queryByText('附件会先通过受保护上传通道暂存，再进入真实发送流程。')).not.toBeInTheDocument();
+    expect(screen.queryByText('返回路径')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '返回上一步' })).not.toBeInTheDocument();
   });
 
   it('wires keyboard save-close at core level', async () => {

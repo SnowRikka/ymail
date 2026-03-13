@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, destroyComposeDraft, persistComposeDraft, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
+import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, destroyComposeDraft, persistComposeDraft, selectDefaultIdentityId, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
 import { queryReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
@@ -138,6 +138,17 @@ function createClientMock() {
       sessionState: 'session-state',
     }),
     email: {
+      get: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          kind: 'success',
+          response: {
+            accountId: 'primary',
+            list: [createServerDraftEmail()],
+            state: 'email-state',
+          },
+        },
+      }),
       set: createEmailSetMock(),
     },
     identity: {
@@ -206,6 +217,22 @@ function createReplyThread() {
   } as const;
 }
 
+function createServerDraftEmail() {
+  return {
+    attachments: [],
+    bodyValues: {
+      'text-part': {
+        value: '服务器草稿正文',
+      },
+    },
+    from: [{ email: 'owner@example.com', name: 'Owner' }],
+    id: 'server-draft-1',
+    subject: '服务器草稿主题',
+    textBody: [{ partId: 'text-part', type: 'text/plain' }],
+    to: [{ email: 'alice@example.com', name: 'Alice' }],
+  } as const;
+}
+
 beforeEach(() => {
   mockPush.mockReset();
   mockSearchParams = new URLSearchParams('intent=new&accountId=primary');
@@ -260,6 +287,27 @@ describe('compose-submit foundations', () => {
     expect(classifyComposeExecutionError({ kind: 'transport', message: 'too large', status: 413 }, 'fallback').kind).toBe('attachment-rejected');
     expect(classifyComposeExecutionError({ kind: 'transport', message: 'offline', status: 502 }, 'fallback').kind).toBe('network-failure');
     expect(classifyComposeExecutionError({ accountId: null, capability: 'submission', kind: 'capability', message: 'bad', reason: 'missing-capability' }, 'fallback').kind).toBe('upstream-validation');
+  });
+
+  it('defaults fresh compose identity from account-scoped order before placeholder fallback', () => {
+    const identities = toComposeIdentityOptions([
+      { email: 'z-current@example.com', id: 'identity-current', name: 'Z Current', replyTo: [], textSignature: undefined },
+      { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], textSignature: undefined },
+    ]);
+
+    expect(identities.map((identity) => identity.id)).toEqual(['identity-current', 'identity-alias']);
+    expect(selectDefaultIdentityId(identities, null)).toBe('identity-current');
+    expect(selectDefaultIdentityId(identities, 'identity-alias')).toBe('identity-alias');
+  });
+
+  it('keeps a stored preferred identity before falling back to the account-scoped default', () => {
+    const identities = toComposeIdentityOptions([
+      { email: 'z-current@example.com', id: 'identity-current', name: 'Z Current', replyTo: [], textSignature: undefined },
+      { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], textSignature: undefined },
+    ]);
+
+    expect(selectDefaultIdentityId(identities, null, 'identity-alias')).toBe('identity-alias');
+    expect(selectDefaultIdentityId(identities, 'missing-identity', 'identity-alias')).toBe('identity-alias');
   });
 
   it('uploads attachments through same-origin transport helper', async () => {
@@ -441,28 +489,53 @@ describe('compose-submit foundations', () => {
 
     renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
 
-    fireEvent.change(await screen.findByTestId('compose-body'), { target: { value: '只编辑这一段回复' } });
+    await waitFor(() => expect(screen.getByTestId('compose-quoted-block')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('compose-body')).toHaveValue(''));
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('Reply Desk <reply@example.com>'));
+    await waitFor(() => expect(screen.getByTestId('compose-subject')).toHaveValue('回复：项目更新'));
+    fireEvent.change(screen.getByTestId('compose-body'), { target: { value: '只编辑这一段回复' } });
     fireEvent.click(screen.getByTestId('compose-save-close'));
 
-    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
-      accountId: 'primary',
-      create: {
-        'draft-email': expect.objectContaining({
-          bodyValues: {
-            'text-part': expect.objectContaining({
-              value: expect.stringContaining('只编辑这一段回复\n\n-------- 原始邮件 --------'),
-            }),
-          },
-          keywords: { '$draft': true },
-          mailboxIds: { 'drafts-id': true },
-        }),
-      },
-      update: undefined,
-    }));
+    await waitFor(() => expect(client.email.set.mock.calls.some(([request]) => {
+      const payload = request.create?.['draft-email'] ?? Object.values(request.update ?? {})[0];
+      const body = payload?.bodyValues?.['text-part']?.value;
+
+      return request.accountId === 'primary'
+        && payload?.keywords?.['$draft'] === true
+        && payload?.mailboxIds?.['drafts-id'] === true
+        && typeof body === 'string'
+        && body.includes('只编辑这一段回复\n\n-------- 原始邮件 --------');
+    })).toBe(true));
 
     const storedDraft = useComposeDraftStore.getState().drafts['reply::primary::thread-1::message-1'];
     expect(storedDraft?.form.body).toBe('只编辑这一段回复');
     expect(storedDraft?.quoted?.body).toContain('-------- 原始邮件 --------');
+  });
+
+  it('save-close updates the existing server draft id when opened from a drafts route', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1');
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(client.email.get).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'primary', ids: ['server-draft-1'] })));
+    await waitFor(() => expect(screen.getByTestId('compose-subject')).toHaveValue('服务器草稿主题'));
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('Alice <alice@example.com>'));
+    await waitFor(() => expect(screen.getByTestId('compose-body')).toHaveValue('服务器草稿正文'));
+
+    fireEvent.change(screen.getByTestId('compose-subject'), { target: { value: '更新后的服务器草稿' } });
+    fireEvent.click(screen.getByTestId('compose-save-close'));
+
+    await waitFor(() => expect(client.email.set.mock.calls.some(([request]) => {
+      const payload = request.update?.['server-draft-1'];
+
+      return request.accountId === 'primary'
+        && payload?.keywords?.['$draft'] === true
+        && payload?.mailboxIds?.['drafts-id'] === true
+        && payload?.subject === '更新后的服务器草稿';
+    })).toBe(true));
+    expect(useComposeDraftStore.getState().drafts['new::primary::explicit-draft::server-draft-1']?.serverDraftId).toBe('server-draft-1');
   });
 
   it('repeated save-close updates the existing server draft when serverDraftId is already known', async () => {

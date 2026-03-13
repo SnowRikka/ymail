@@ -100,7 +100,7 @@ export function toComposeIdentityOptions(identities: readonly JmapIdentityObject
   const options: ComposeIdentityOption[] = [];
 
   for (const identity of identities) {
-      const email = typeof identity.email === 'string' ? identity.email.trim() : '';
+    const email = typeof identity.email === 'string' ? identity.email.trim() : '';
 
       if (email.length === 0) {
         continue;
@@ -118,16 +118,20 @@ export function toComposeIdentityOptions(identities: readonly JmapIdentityObject
       });
   }
 
-  return options.sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'));
+  return options;
 }
 
-export function selectDefaultIdentityId(identities: readonly ComposeIdentityOption[], preferredIdentityId: string | null, username: string | null) {
-  if (preferredIdentityId && identities.some((identity) => identity.id === preferredIdentityId)) {
-    return preferredIdentityId;
+export function selectDefaultIdentityId(
+  identities: readonly ComposeIdentityOption[],
+  ...preferredIdentityIds: readonly (string | null | undefined)[]
+) {
+  for (const preferredIdentityId of preferredIdentityIds) {
+    if (preferredIdentityId && identities.some((identity) => identity.id === preferredIdentityId)) {
+      return preferredIdentityId;
+    }
   }
 
-  const normalizedUser = username?.trim().toLowerCase() ?? null;
-  return identities.find((identity) => identity.email.toLowerCase() === normalizedUser)?.id ?? identities[0]?.id ?? null;
+  return identities[0]?.id ?? null;
 }
 
 export function toComposeMailboxRoleState(mailboxes: readonly JmapMailboxObject[]): ComposeMailboxRoleState {

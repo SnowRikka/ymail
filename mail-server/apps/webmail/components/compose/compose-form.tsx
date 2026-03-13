@@ -13,7 +13,9 @@ import {
   composeBodyWithQuotedContent,
   EMPTY_COMPOSE_FORM_STATE,
   extractEditableComposeBody,
+  hydrateComposeServerDraft,
   hasComposeContent,
+  isFreshComposeDraftId,
   parseComposeRouteState,
   type ComposeDraftRecord,
   type ComposeFormState,
@@ -36,6 +38,7 @@ import {
   uploadAttachmentThroughBff,
   type ComposeAttachmentRecord,
   type ComposeDraftStatus,
+  type ComposeIdentityOption,
   type ComposeIdentityState,
   type ComposeSubmissionFailure,
 } from '@/lib/jmap/compose-submit';
@@ -58,6 +61,7 @@ interface ComposeInitialLoad {
   readonly identityId: string | null;
   readonly message: string | null;
   readonly phase: ComposeFormPhase;
+  readonly preferredIdentityEmail: string | null;
   readonly quoted: ComposeQuotedContent | null;
 }
 
@@ -74,6 +78,8 @@ const AUTOSAVE_INTERVAL_MS = 12_000;
 const EMPTY_ERRORS: ComposeValidationErrors = { body: null, subject: null, to: null };
 const IDENTITY_PROPERTIES = ['id', 'name', 'email', 'replyTo', 'bcc', 'textSignature'] as const;
 const MAILBOX_PROPERTIES = ['id', 'name', 'role', 'sortOrder'] as const;
+const SERVER_DRAFT_BODY_PROPERTIES = ['partId', 'blobId', 'name', 'size', 'type'] as const;
+const SERVER_DRAFT_PROPERTIES = ['id', 'from', 'to', 'subject', 'textBody', 'bodyValues', 'attachments'] as const;
 const MAILBOX_QUERY_SORT: readonly JmapQuerySort[] = [
   { isAscending: true, property: 'sortOrder' },
   { isAscending: true, property: 'name' },
@@ -99,6 +105,16 @@ function buildFallbackCloseHref(accountId: string | null) {
   return accountId ? `/mail/inbox?accountId=${encodeURIComponent(accountId)}` : '/mail/inbox';
 }
 
+function selectIdentityIdByEmail(identities: readonly ComposeIdentityOption[], email: string | null) {
+  const normalizedEmail = email?.trim().toLowerCase() ?? '';
+
+  if (normalizedEmail.length === 0) {
+    return null;
+  }
+
+  return identities.find((identity) => identity.email.toLowerCase() === normalizedEmail)?.id ?? null;
+}
+
 function intentTitle(intent: ReturnType<typeof parseComposeRouteState>['intent']) {
   switch (intent) {
     case 'reply':
@@ -107,30 +123,6 @@ function intentTitle(intent: ReturnType<typeof parseComposeRouteState>['intent']
       return '转发邮件';
     default:
       return '新建邮件';
-  }
-}
-
-function intentHint(intent: ReturnType<typeof parseComposeRouteState>['intent']) {
-  switch (intent) {
-    case 'reply':
-      return '回复会继承引用正文；身份、附件与自动保存现已接入真实发送链路。';
-    case 'forward':
-      return '转发支持附件续传、草稿恢复与真实提交，不会在失败时丢失内容。';
-    default:
-      return '纯文本工作台现已支持身份切换、自动保存、附件上传与真实发送。';
-  }
-}
-
-function composePhaseLabel(phase: ComposeFormPhase) {
-  switch (phase) {
-    case 'draft':
-      return '已恢复草稿';
-    case 'prefill':
-      return '已带入引用';
-    case 'warning':
-      return '注意';
-    default:
-      return '空白草稿';
   }
 }
 
@@ -165,10 +157,6 @@ function formatAttachmentStateLabel(state: ComposeAttachmentRecord['state']) {
   }
 }
 
-function toFailureMessage(failure: ComposeSubmissionFailure | null) {
-  return failure?.message ?? null;
-}
-
 export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: SafeSessionSummary | null }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -178,7 +166,18 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const routeState = useMemo(() => parseComposeRouteState(searchParams), [searchParams]);
   const accountId = resolveComposeAccountId(routeState.accountId, bootstrapQuery.data);
   const draftKey = buildComposeDraftKey({ accountId, draftId: routeState.draftId, intent: routeState.intent, messageId: routeState.messageId, threadId: routeState.threadId });
-  const storedDraft = useComposeDraftStore((state) => state.drafts[draftKey] ?? null);
+  const allDrafts = useComposeDraftStore((state) => state.drafts);
+  const isServerDraftRoute = routeState.intent === 'new' && Boolean(routeState.draftId) && !isFreshComposeDraftId(routeState.draftId);
+  const matchedServerDraftEntry = useMemo(() => {
+    if (!isServerDraftRoute || allDrafts[draftKey]) {
+      return null;
+    }
+
+    return Object.entries(allDrafts).find(([, draft]) => draft.serverDraftId === routeState.draftId) ?? null;
+  }, [allDrafts, draftKey, isServerDraftRoute, routeState.draftId]);
+  const storedDraft = allDrafts[draftKey] ?? matchedServerDraftEntry?.[1] ?? null;
+  const storedDraftKey = matchedServerDraftEntry?.[0] ?? draftKey;
+  const routeServerDraftId = isServerDraftRoute ? routeState.draftId : null;
   const [formState, setFormState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);
   const [baselineState, setBaselineState] = useState<ComposeFormState>(EMPTY_COMPOSE_FORM_STATE);
   const [attachments, setAttachments] = useState<readonly ComposeAttachmentRecord[]>([]);
@@ -188,7 +187,6 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const [quotedContent, setQuotedContent] = useState<ComposeQuotedContent | null>(null);
   const [validationErrors, setValidationErrors] = useState<ComposeValidationErrors>(EMPTY_ERRORS);
   const [actionState, setActionState] = useState<ComposeActionState>({ kind: 'idle', message: null });
-  const [phase, setPhase] = useState<ComposeFormPhase>('empty');
   const [draftStatus, setDraftStatus] = useState<ComposeDraftStatus>(createDraftStatus('idle'));
   const [sendFailure, setSendFailure] = useState<ComposeSubmissionFailure | null>(null);
   const [isSending, setIsSending] = useState(false);
@@ -203,7 +201,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const latestAccountIdRef = useRef(accountId);
   const hasSentRef = useRef(false);
   const isMountedRef = useRef(true);
-  const serverDraftIdRef = useRef<string | null>(storedDraft?.serverDraftId ?? null);
+  const serverDraftIdRef = useRef<string | null>(storedDraft?.serverDraftId ?? routeServerDraftId);
   const serverDraftQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const selfEmail = sessionSummary?.username?.trim().toLowerCase() ?? null;
   const needsQuotedPrefill = routeState.intent !== 'new';
@@ -214,6 +212,33 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     enabled: needsQuotedPrefill && Boolean(accountId && routeState.threadId) && (!storedDraft || !storedDraft.quoted),
     queryFn: () => queryReaderThread({ accountId: accountId as string, client, threadId: routeState.threadId as string }),
     queryKey: ['compose-thread-source', accountId, routeState.threadId],
+    staleTime: 1000 * 30,
+  });
+
+  const serverDraftQuery = useQuery({
+    enabled: isServerDraftRoute && Boolean(accountId && routeServerDraftId) && !storedDraft,
+    queryFn: async () => {
+      const result = await client.email.get({
+        accountId: accountId as string,
+        bodyProperties: SERVER_DRAFT_BODY_PROPERTIES,
+        fetchTextBodyValues: true,
+        ids: [routeServerDraftId as string],
+        maxBodyValueBytes: 2_000_000,
+        properties: SERVER_DRAFT_PROPERTIES,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+
+      if (result.result.kind !== 'success') {
+        throw new Error(result.result.error.description ?? '服务器草稿读取失败。');
+      }
+
+      const email = result.result.response.list[0];
+      return email ? hydrateComposeServerDraft(email) : null;
+    },
+    queryKey: ['compose-server-draft', accountId, routeServerDraftId],
     staleTime: 1000 * 30,
   });
 
@@ -297,16 +322,59 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
         identityId: storedDraft.identityId ?? null,
         message: `已恢复 ${formatDraftTimestamp(storedDraft.updatedAt)} 暂存的草稿。`,
         phase: 'draft',
+        preferredIdentityEmail: null,
         quoted: storedQuoted,
       };
     }
 
+    if (isServerDraftRoute) {
+      if (!accountId || !routeServerDraftId) {
+        return {
+          attachments: [],
+          form: EMPTY_COMPOSE_FORM_STATE,
+          identityId: null,
+          message: '缺少服务器草稿上下文，已回退为空白草稿。',
+          phase: 'warning',
+          preferredIdentityEmail: null,
+          quoted: null,
+        };
+      }
+
+      if (serverDraftQuery.isLoading) {
+        return null;
+      }
+
+      if (serverDraftQuery.isError || !serverDraftQuery.data) {
+        return {
+          attachments: [],
+          form: EMPTY_COMPOSE_FORM_STATE,
+          identityId: null,
+          message: serverDraftQuery.isError
+            ? (serverDraftQuery.error instanceof Error ? serverDraftQuery.error.message : '服务器草稿读取失败，已回退为空白草稿。')
+            : '未找到对应的服务器草稿，已回退为空白草稿。',
+          phase: 'warning',
+          preferredIdentityEmail: null,
+          quoted: null,
+        };
+      }
+
+      return {
+        attachments: fromStoredAttachments(serverDraftQuery.data.attachments),
+        form: serverDraftQuery.data.form,
+        identityId: null,
+        message: '已载入服务器草稿。',
+        phase: 'draft',
+        preferredIdentityEmail: serverDraftQuery.data.identityEmail,
+        quoted: null,
+      };
+    }
+
     if (!needsQuotedPrefill) {
-      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: null, phase: 'empty', quoted: null };
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: null, phase: 'empty', preferredIdentityEmail: null, quoted: null };
     }
 
     if (!accountId || !routeState.threadId) {
-      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: '缺少引用上下文，已回退为空白草稿。', phase: 'warning', quoted: null };
+      return { attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, message: '缺少引用上下文，已回退为空白草稿。', phase: 'warning', preferredIdentityEmail: null, quoted: null };
     }
 
     if (threadQuery.isLoading) {
@@ -320,6 +388,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
         identityId: null,
         message: threadQuery.isError ? (threadQuery.error instanceof Error ? threadQuery.error.message : '引用邮件读取失败，已回退为空白草稿。') : '未找到可引用的线程内容，已回退为空白草稿。',
         phase: 'warning',
+        preferredIdentityEmail: null,
         quoted: null,
       };
     }
@@ -330,9 +399,17 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       identityId: null,
       message: null,
       phase: 'prefill',
+      preferredIdentityEmail: null,
       quoted: quotedPrefill?.quoted ?? null,
     };
-  }, [accountId, needsQuotedPrefill, quotedPrefill, routeState.threadId, storedDraft, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
+  }, [accountId, isServerDraftRoute, needsQuotedPrefill, quotedPrefill, routeServerDraftId, serverDraftQuery.data, serverDraftQuery.error, serverDraftQuery.isError, serverDraftQuery.isLoading, routeState.threadId, storedDraft, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
+  const draftPreferredIdentityId = useMemo(() => {
+    if (initialLoad?.identityId) {
+      return initialLoad.identityId;
+    }
+
+    return selectIdentityIdByEmail(identityQuery.data ?? [], initialLoad?.preferredIdentityEmail ?? null);
+  }, [identityQuery.data, initialLoad?.identityId, initialLoad?.preferredIdentityEmail]);
 
   const attachmentSignature = useMemo(() => buildAttachmentSignature(attachments), [attachments]);
   const isDirty = !areComposeFormStatesEqual(formState, baselineState)
@@ -365,48 +442,48 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     }
 
     const identities = identityQuery.data ?? [];
-    setIdentityState({ kind: 'ready', identities, selectedIdentityId: selectDefaultIdentityId(identities, selectedIdentityId, sessionSummary?.username ?? null) });
-  }, [identityQuery.data, identityQuery.error, identityQuery.isError, identityQuery.isLoading, selectedIdentityId, sessionSummary?.username]);
+    setIdentityState({ kind: 'ready', identities, selectedIdentityId: selectDefaultIdentityId(identities, selectedIdentityId, draftPreferredIdentityId) });
+  }, [draftPreferredIdentityId, identityQuery.data, identityQuery.error, identityQuery.isError, identityQuery.isLoading, selectedIdentityId]);
 
   useEffect(() => {
     if (identityState.kind !== 'ready') {
       return;
     }
 
-    const nextIdentityId = selectDefaultIdentityId(identityState.identities, selectedIdentityId, sessionSummary?.username ?? null);
+    const nextIdentityId = selectDefaultIdentityId(identityState.identities, selectedIdentityId, draftPreferredIdentityId);
 
     if (nextIdentityId !== selectedIdentityId) {
       setSelectedIdentityId(nextIdentityId);
     }
-  }, [identityState, selectedIdentityId, sessionSummary?.username]);
+  }, [draftPreferredIdentityId, identityState, selectedIdentityId]);
 
   useEffect(() => {
     if (!initialLoad) {
       return;
     }
 
-    const signature = `${draftKey}:${initialLoad.phase}:${storedDraft?.updatedAt ?? 'fresh'}`;
+    const signature = `${storedDraftKey}:${initialLoad.phase}:${storedDraft?.updatedAt ?? routeServerDraftId ?? 'fresh'}`;
 
     if (initializedDraftSignatureRef.current === signature) {
       return;
     }
 
-    if (initializedDraftSignatureRef.current?.startsWith(`${draftKey}:`) && hasLocalSessionChangesRef.current) {
+    if (initializedDraftSignatureRef.current?.startsWith(`${storedDraftKey}:`) && hasLocalSessionChangesRef.current) {
       return;
     }
 
+    const initialIdentityId = initialLoad.identityId;
     initializedDraftSignatureRef.current = signature;
     hasLocalSessionChangesRef.current = false;
-    serverDraftIdRef.current = storedDraft?.serverDraftId ?? null;
+    serverDraftIdRef.current = storedDraft?.serverDraftId ?? routeServerDraftId;
     setFormState(initialLoad.form);
     setBaselineState(initialLoad.form);
     setAttachments(initialLoad.attachments);
     setBaselineAttachmentSignature(buildAttachmentSignature(initialLoad.attachments));
-    setSelectedIdentityId(initialLoad.identityId);
-    setBaselineIdentityId(initialLoad.identityId);
+    setSelectedIdentityId(initialIdentityId);
+    setBaselineIdentityId(initialIdentityId);
     setQuotedContent(initialLoad.quoted);
     setValidationErrors(EMPTY_ERRORS);
-    setPhase(initialLoad.phase);
     setDraftStatus(createDraftStatus('idle', initialLoad.message ?? '等待修改'));
     setSendFailure(null);
     setActionState(initialLoad.message ? { kind: initialLoad.phase === 'warning' ? 'warning' : 'info', message: initialLoad.message } : { kind: 'idle', message: null });
@@ -421,7 +498,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       bodyRef.current?.focus();
       bodyRef.current?.setSelectionRange(0, 0);
     });
-  }, [draftKey, initialLoad, routeState.intent, storedDraft?.serverDraftId, storedDraft?.updatedAt]);
+  }, [initialLoad, routeServerDraftId, routeState.intent, storedDraft?.serverDraftId, storedDraft?.updatedAt, storedDraftKey]);
 
   const buildStoredDraftRecord = useCallback((snapshot: DraftSnapshot, updatedAt: number, serverDraftId: string | null): ComposeDraftRecord => ({
     accountId: latestAccountIdRef.current,
@@ -438,8 +515,17 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   }), []);
 
   const storeDraftLocally = useCallback((snapshot: DraftSnapshot, serverDraftId: string | null = serverDraftIdRef.current) => {
-    useComposeDraftStore.getState().saveDraft(draftKey, buildStoredDraftRecord(snapshot, Date.now(), serverDraftId));
-  }, [buildStoredDraftRecord, draftKey]);
+    useComposeDraftStore.getState().saveDraft(storedDraftKey, buildStoredDraftRecord(snapshot, Date.now(), serverDraftId));
+  }, [buildStoredDraftRecord, storedDraftKey]);
+
+  const clearStoredDraft = useCallback(() => {
+    const store = useComposeDraftStore.getState();
+    store.clearDraft(storedDraftKey);
+
+    if (storedDraftKey !== draftKey) {
+      store.clearDraft(draftKey);
+    }
+  }, [draftKey, storedDraftKey]);
 
   const resolveMailboxRoleStateForPersistence = useCallback(async () => {
     if (mailboxRoleState.draftsId) {
@@ -557,7 +643,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     hasLocalSessionChangesRef.current = true;
 
     if (!hasComposeContent({ ...activeSnapshot.form, body: composeBodyWithQuotedContent(activeSnapshot.form.body, activeSnapshot.quoted) }) && activeSnapshot.attachments.length === 0) {
-      useComposeDraftStore.getState().clearDraft(draftKey);
+      clearStoredDraft();
       setDraftStatus(createDraftStatus('idle', reason === 'close' ? '空白草稿已清理。' : '等待修改'));
       setBaselineState(activeSnapshot.form);
       setBaselineAttachmentSignature(buildAttachmentSignature(activeSnapshot.attachments));
@@ -592,7 +678,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     setDraftStatus(createDraftStatus('saved', reason === 'close' ? '草稿已暂存，本次关闭不会丢失输入内容。' : '草稿已自动保存。'));
     return 'saved' as const;
-  }, [draftKey, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
+  }, [clearStoredDraft, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
 
   useEffect(() => {
     if (!isDirty || isSending) {
@@ -628,7 +714,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     }
 
     if (!hasComposeContent({ ...latestSnapshot.form, body: composeBodyWithQuotedContent(latestSnapshot.form.body, latestSnapshot.quoted) }) && latestSnapshot.attachments.length === 0) {
-      useComposeDraftStore.getState().clearDraft(draftKey);
+      clearStoredDraft();
 
       if (serverDraftIdRef.current) {
         void queueServerDraftDestroy(true);
@@ -639,7 +725,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     storeDraftLocally(latestSnapshot);
     void queueServerDraftSave(latestSnapshot, true);
-  }, [draftKey, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
+  }, [clearStoredDraft, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
 
   const updateField = <Key extends keyof ComposeFormState>(key: Key, value: ComposeFormState[Key]) => {
     hasLocalSessionChangesRef.current = true;
@@ -794,7 +880,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     if (serverDraftIdRef.current && accountId) {
       await queueServerDraftDestroy();
     }
-    useComposeDraftStore.getState().clearDraft(draftKey);
+    clearStoredDraft();
     serverDraftIdRef.current = null;
     setBaselineState(formState);
     setBaselineAttachmentSignature(buildAttachmentSignature(attachments));
@@ -825,14 +911,10 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       <section className="rounded-[22px] border border-line/70 bg-canvas/72 px-4 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-muted">写信工作台</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-ink">{intentTitle(routeState.intent)}</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-muted">{intentHint(routeState.intent)}</p>
+            <h2 className="text-2xl font-semibold tracking-[-0.03em] text-ink">{intentTitle(routeState.intent)}</h2>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] text-muted">
-            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">纯文本写信</span>
-            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">12 秒自动暂存</span>
-            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">同源附件上传</span>
+            <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">自动暂存</span>
           </div>
         </div>
       </section>
@@ -866,15 +948,15 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
                 发件身份
                 <select
                   aria-label="发件身份"
-                  className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
+                  className="mt-2 min-h-[52px] w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
                   data-testid="identity-select"
-                   disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
-                   onBlur={handleFieldBlur}
-                   onChange={(event) => {
-                     hasLocalSessionChangesRef.current = true;
-                     setSelectedIdentityId(event.target.value || null);
-                     setDraftStatus(createDraftStatus('idle'));
-                   }}
+                  disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
+                  onBlur={handleFieldBlur}
+                  onChange={(event) => {
+                    hasLocalSessionChangesRef.current = true;
+                    setSelectedIdentityId(event.target.value || null);
+                    setDraftStatus(createDraftStatus('idle'));
+                  }}
                   value={selectedIdentityId ?? ''}
                 >
                   <option value="">{identityState.kind === 'error' ? '身份读取失败' : identityState.kind === 'loading' ? '身份载入中…' : '请选择发件身份'}</option>
@@ -882,9 +964,11 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
                 </select>
               </label>
 
-              <div className="rounded-[20px] border border-line/70 bg-panel/72 px-4 py-3 text-sm text-muted">
-                <p className="text-[11px] uppercase tracking-[0.24em] text-accent/80">草稿状态</p>
-                <p aria-live="polite" className="mt-2" data-testid="draft-status">{draftStatus.message}</p>
+              <div className="block text-sm text-ink">
+                <div className="mt-2 flex min-h-[52px] items-center justify-between gap-4 rounded-2xl border border-line/70 bg-panel/72 px-4 py-3 text-sm text-muted" data-testid="draft-status-field">
+                  <p className="shrink-0 text-[11px] uppercase tracking-[0.24em] text-accent/80">草稿状态</p>
+                  <p aria-live="polite" className="text-right" data-testid="draft-status">{draftStatus.message}</p>
+                </div>
               </div>
             </div>
 
@@ -946,10 +1030,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
             <section className="mt-4 rounded-[24px] border border-line/80 bg-canvas/62 p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-accent/80">附件</p>
-                  <p className="mt-2 text-sm text-muted">附件会先通过受保护上传通道暂存，再进入真实发送流程。</p>
-                </div>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-accent/80">附件</p>
                 <>
                   <input data-testid="attachment-upload" hidden multiple onChange={(event) => { void handleAttachmentSelect(event); }} ref={fileInputRef} type="file" />
                   <button className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent" onClick={() => fileInputRef.current?.click()} type="button">
@@ -977,9 +1058,6 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
           <section className="flex flex-col gap-3 rounded-[24px] border border-line/80 bg-canvas/62 p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{composePhaseLabel(phase)}</span>
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{isDirty ? '尚未保存' : '已同步'}</span>
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{returnToHref === fallbackCloseHref ? '返回收件箱' : '返回线程'}</span>
               <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">Ctrl / Cmd + Enter 发送</span>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -990,16 +1068,6 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
                 {isSending ? '发送中…' : '发送'}
               </button>
             </div>
-          </section>
-
-          <section className="rounded-[24px] border border-dashed border-line/70 bg-canvas/58 p-4 text-sm leading-7 text-muted">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-[11px] uppercase tracking-[0.28em] text-accent/80">返回路径</span>
-              <span className="font-mono text-[11px] text-muted">{returnToHref}</span>
-            </div>
-            <p className="mt-3">自动保存会在固定间隔与字段失焦时触发；上传失败或提交失败时，正文、附件与草稿会保留在当前工作台。</p>
-            <p className="mt-2">若你想直接返回阅读器，可使用当前入口继续回到：<button className="ml-2 inline-flex items-center rounded-full border border-line/70 px-3 py-1 font-mono text-[11px] text-ink transition hover:border-accent/50 hover:text-accent" onClick={() => router.push(returnToHref)} type="button">返回上一步</button></p>
-            {toFailureMessage(sendFailure) ? <p className="mt-2 text-amber-300">失败恢复：{toFailureMessage(sendFailure)}</p> : null}
           </section>
         </form>
       )}

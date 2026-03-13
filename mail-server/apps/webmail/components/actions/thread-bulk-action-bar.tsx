@@ -18,7 +18,16 @@ export function ThreadBulkActionBar({ archiveMailboxId, currentMailboxRole, disa
   }
 
   const deleteOnlyActions = isDeleteOnlyMailboxRole(currentMailboxRole);
+  const hideReadAction = deleteOnlyActions || currentMailboxRole === 'archive';
   const hideSpamAction = shouldHideSpamActionForMailboxRole(currentMailboxRole);
+  const visibility = deleteOnlyActions
+    ? { archive: false, markRead: false, spam: false, star: false }
+    : hideReadAction || hideSpamAction
+      ? {
+          ...(hideReadAction ? { markRead: false } : {}),
+          ...(hideSpamAction ? { spam: false } : {}),
+        }
+      : undefined;
 
   return (
     <div aria-live="polite" className="rounded-[20px] border border-accent/25 bg-accent/8 px-4 py-3" data-testid="thread-bulk-bar">
@@ -27,7 +36,7 @@ export function ThreadBulkActionBar({ archiveMailboxId, currentMailboxRole, disa
           <p className="text-[11px] uppercase tracking-[0.28em] text-accent/80">批量操作</p>
           <p className="text-sm text-ink">已选择 {selectedCount} 个邮件</p>
         </div>
-        <MailActionStrip availability={{ archive: Boolean(archiveMailboxId) }} disabled={disabled} onAction={onAction} visibility={deleteOnlyActions ? { archive: false, markRead: false, spam: false, star: false } : hideSpamAction ? { spam: false } : undefined} />
+        <MailActionStrip availability={{ archive: Boolean(archiveMailboxId) }} disabled={disabled} onAction={onAction} visibility={visibility} />
       </div>
     </div>
   );

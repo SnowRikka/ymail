@@ -75,6 +75,7 @@ function getMailboxByRole(items: readonly MailboxNavigationItem[], role: Mailbox
 
 function createRow(id: string, overrides?: Partial<ThreadListRow>): ThreadListRow {
   return {
+    emailId: `email-${id}-1`,
     emailIds: [`email-${id}-1`, `email-${id}-2`],
     hasAttachment: false,
     id,
@@ -142,6 +143,24 @@ function expectJunkBulkActions() {
   expect(screen.getByTestId('action-move')).toBeInTheDocument();
   expect(screen.getByTestId('action-delete')).toBeInTheDocument();
   expect(screen.queryByTestId('action-spam')).not.toBeInTheDocument();
+}
+
+function expectArchiveReaderActions() {
+  expect(screen.queryByTestId('reader-action-mark-read')).not.toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-star')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-move')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-delete')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-action-spam')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-reply')).toBeInTheDocument();
+  expect(screen.getByTestId('reader-forward')).toBeInTheDocument();
+}
+
+function expectArchiveBulkActions() {
+  expect(screen.queryByTestId('action-mark-read')).not.toBeInTheDocument();
+  expect(screen.getByTestId('action-star')).toBeInTheDocument();
+  expect(screen.getByTestId('action-move')).toBeInTheDocument();
+  expect(screen.getByTestId('action-delete')).toBeInTheDocument();
+  expect(screen.getByTestId('action-spam')).toBeInTheDocument();
 }
 
 function createReaderThread(overrides?: Partial<{ isFlagged: boolean; isUnread: boolean; mailboxIds: Record<string, boolean>; subject: string }>) {
@@ -644,6 +663,33 @@ describe('mail-actions', () => {
     );
 
     expectJunkReaderActions();
+  });
+
+  it('hides read actions but keeps the rest of the bulk surface in archive mailbox', () => {
+    const mailbox = getMailboxByRole(mailboxItems, 'archive');
+    renderPanel(
+      { email: { set: vi.fn() } } as unknown as JmapClient,
+      [createRow('archive-thread', { mailboxIds: { 'archive-id': true } }), createRow('archive-thread-2', { mailboxIds: { 'archive-id': true } })],
+      vi.fn().mockResolvedValue(undefined),
+      mailbox,
+    );
+
+    expectRowActionsRemoved('archive-thread');
+    fireEvent.click(screen.getByTestId('thread-select-archive-thread'));
+    fireEvent.click(screen.getByTestId('thread-select-archive-thread-2'));
+    expectArchiveBulkActions();
+  });
+
+  it('hides read actions but keeps the rest of the reader surface in archive mailbox', () => {
+    const mailbox = getMailboxByRole(mailboxItems, 'archive');
+    mockSearch = `accountId=primary&mailboxId=${mailbox.id}&threadId=thread-1`;
+
+    renderReader(
+      { email: { set: vi.fn() } } as unknown as JmapClient,
+      createReaderThread({ isUnread: false, mailboxIds: { 'archive-id': true }, subject: 'Archive subject' }),
+    );
+
+    expectArchiveReaderActions();
   });
 
   it('hides archive on list bulk and reader surfaces when archive mailbox is unavailable', () => {

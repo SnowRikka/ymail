@@ -473,9 +473,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
 
   if (state.kind === 'empty') {
     return (
-      <ReaderStatePanel eyebrow="等待阅读" title="选择一个线程开始阅读">
-        左侧线程列表已经和路由状态同步。选择任意线程后，这里会按时间顺序展示消息元数据、正文与附件。
-      </ReaderStatePanel>
+      <ReaderStatePanel eyebrow="等待阅读" title="选择一个邮件开始阅读">{null}</ReaderStatePanel>
     );
   }
 
@@ -530,7 +528,16 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
   const readerCanSpam = currentMailboxId !== null && roleTargets.junkId !== null;
   const currentMailboxRole = resolvedMailboxItems.find((mailbox) => mailbox.id === currentMailboxId)?.role ?? null;
   const deleteOnlyReaderActions = isDeleteOnlyMailboxRole(currentMailboxRole);
+  const hideReadReaderAction = deleteOnlyReaderActions || currentMailboxRole === 'archive';
   const hideSpamReaderAction = shouldHideSpamActionForMailboxRole(currentMailboxRole);
+  const readerActionVisibility = deleteOnlyReaderActions
+    ? { archive: false, markRead: false, spam: false, star: false }
+    : hideReadReaderAction || hideSpamReaderAction
+      ? {
+          ...(hideReadReaderAction ? { markRead: false } : {}),
+          ...(hideSpamReaderAction ? { spam: false } : {}),
+        }
+      : undefined;
 
   return (
     <div className="space-y-4">
@@ -549,7 +556,7 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
               starAction={displayedThread.isFlagged ? { type: 'unstar' } : { type: 'star' }}
               starLabel={displayedThread.isFlagged ? '取消星标' : '加星'}
               testIdPrefix="reader"
-              visibility={deleteOnlyReaderActions ? { archive: false, markRead: false, spam: false, star: false } : hideSpamReaderAction ? { spam: false } : undefined}
+              visibility={readerActionVisibility}
             />
             {deleteOnlyReaderActions ? null : (
               <div className="flex flex-wrap gap-2">

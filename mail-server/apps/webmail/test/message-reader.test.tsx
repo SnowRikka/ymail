@@ -13,7 +13,7 @@ const mockRouter = {
   replace: vi.fn(),
 };
 
-const mockSearchParams = new URLSearchParams('accountId=primary&threadId=thread-1');
+let mockSearchParams = new URLSearchParams('accountId=primary&threadId=thread-1');
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/mail/inbox',
@@ -82,6 +82,7 @@ function createMessage(overrides?: Partial<{
 }
 
 beforeEach(() => {
+  mockSearchParams = new URLSearchParams('accountId=primary&threadId=thread-1');
   mockRouter.push.mockReset();
   mockRouter.refresh.mockReset();
   mockRouter.replace.mockReset();
@@ -131,6 +132,20 @@ describe('message-reader', () => {
     expect(screen.getByTestId('message-card-message-1')).toBeInTheDocument();
     expect(screen.getByText('Hello plain text')).toBeInTheDocument();
     expect(screen.queryByText('第 1 封')).not.toBeInTheDocument();
+  });
+
+  it('keeps the empty reader panel mounted without explanatory copy', () => {
+    mockSearchParams = new URLSearchParams('accountId=primary');
+    mockedUseQuery.mockReturnValue({
+      data: null,
+      isError: false,
+      isLoading: false,
+    } as never);
+
+    renderPane();
+
+    expect(screen.getByText('选择一个邮件开始阅读')).toBeInTheDocument();
+    expect(screen.queryByText('左侧线程列表已经和路由状态同步。选择任意线程后，这里会按时间顺序展示消息元数据、正文与附件。')).not.toBeInTheDocument();
   });
 
   it('renders sanitized html and blocks remote images by default', () => {

@@ -130,6 +130,7 @@ describe('message-reader', () => {
 
     expect(screen.getByTestId('message-card-message-1')).toBeInTheDocument();
     expect(screen.getByText('Hello plain text')).toBeInTheDocument();
+    expect(screen.queryByText('第 1 封')).not.toBeInTheDocument();
   });
 
   it('renders sanitized html and blocks remote images by default', () => {

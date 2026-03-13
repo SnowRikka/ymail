@@ -146,9 +146,9 @@ export function createMailActionLabel(action: MailActionRequest) {
     case 'delete':
       return '移入废纸篓';
     case 'mark-read':
-      return '标记已读';
+      return '已读';
     case 'mark-unread':
-      return '标记未读';
+      return '未读';
     case 'move':
       return '移动邮件';
     case 'not-spam':

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { MailActionStrip } from '@/components/actions/mail-action-strip';
 import { useMailShellContext } from '@/components/mail/mail-shell';
@@ -299,12 +299,9 @@ function MessageCard({ index, message }: { readonly index: number; readonly mess
       style={{ ['--stage-delay' as string]: `${0.06 + index * 0.03}s` }}
     >
       <div className="flex flex-col gap-4 border-b border-line/70 pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-lg font-semibold text-ink" id={titleId}>{message.subject}</p>
-            <p className="mt-1 text-xs text-muted">{formatDateTime(message.receivedAt ?? message.sentAt)}</p>
-          </div>
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-accent/90">第 {index + 1} 封</span>
+        <div>
+          <p className="text-lg font-semibold text-ink" id={titleId}>{message.subject}</p>
+          <p className="mt-1 text-xs text-muted">{formatDateTime(message.receivedAt ?? message.sentAt)}</p>
         </div>
 
         <div className="space-y-2.5">
@@ -357,6 +354,8 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
   const currentMailboxId = useMemo(() => resolveCurrentMailboxId(pathname, searchParams, resolvedMailboxItems, roleTargets), [pathname, resolvedMailboxItems, roleTargets, searchParams]);
   const [optimisticThread, setOptimisticThread] = useState<ReaderThread | null>(null);
   const [pendingAction, setPendingAction] = useState<MailActionRequest['type'] | null>(null);
+  const autoReadThreadIdRef = useRef<string | null>(null);
+  const previousThreadIdRef = useRef<string | null>(null);
   const rollbackThreadRef = useRef<ReaderThread | null>(null);
   const rollbackHrefRef = useRef<string | null>(null);
 
@@ -394,60 +393,20 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
     };
   }, [bootstrapQuery.isLoading, threadId, threadQuery.data, threadQuery.error, threadQuery.isError, threadQuery.isLoading]);
 
-  if (state.kind === 'empty') {
-    return (
-      <ReaderStatePanel eyebrow="等待阅读" title="选择一个线程开始阅读">
-        左侧线程列表已经和路由状态同步。选择任意线程后，这里会按时间顺序展示消息元数据、正文与附件。
-      </ReaderStatePanel>
-    );
-  }
-
-  if (state.kind === 'loading') {
-    return (
-      <div aria-busy="true" className="space-y-3">
-        <div className="loading-shimmer h-20 rounded-[20px] border border-line/70 bg-canvas/55" />
-        <div className="loading-shimmer h-48 rounded-[24px] border border-line/70 bg-canvas/55" />
-        <div className="loading-shimmer h-40 rounded-[24px] border border-line/70 bg-canvas/55" />
-      </div>
-    );
-  }
-
-  if (state.kind === 'error') {
-    return (
-      <ReaderStatePanel eyebrow="阅读异常" title={state.message}>
-        当前线程的消息详情尚未成功返回，阅读器保持稳定布局，等待你重新选择或稍后重试。
-      </ReaderStatePanel>
-    );
-  }
-
-  if (state.kind === 'not-found') {
-    return (
-      <ReaderStatePanel eyebrow="线程不可用" title="所选线程已不存在或无法访问">
-        当前地址仍指向线程 <span className="font-mono text-ink">{state.threadId}</span>，但此消息已无法访问。可以返回左侧列表重新选择线程。
-      </ReaderStatePanel>
-    );
-  }
-
-  const displayedThread = optimisticThread ?? state.thread;
-  const latestMessage = displayedThread.messages[displayedThread.messages.length - 1];
+  const displayedThread = state.kind === 'ready' ? optimisticThread ?? state.thread : null;
   const currentRoute = searchParams.toString() ? `${pathname}?${searchParams.toString()}` : pathname;
-  const composeReplyHref = buildComposeRouteHref({
-    accountId: displayedThread.accountId,
-    intent: 'reply',
-    messageId: latestMessage.id,
-    returnTo: currentRoute,
-    threadId: displayedThread.id,
-  });
-  const composeForwardHref = buildComposeRouteHref({
-    accountId: displayedThread.accountId,
-    intent: 'forward',
-    messageId: latestMessage.id,
-    returnTo: currentRoute,
-    threadId: displayedThread.id,
-  });
 
-  const handleThreadAction = async (action: MailActionRequest) => {
-    if (pendingAction) {
+  useEffect(() => {
+    if (previousThreadIdRef.current === threadId) {
+      return;
+    }
+
+    previousThreadIdRef.current = threadId;
+    autoReadThreadIdRef.current = null;
+  }, [threadId]);
+
+  const handleThreadAction = useCallback(async (action: MailActionRequest) => {
+    if (pendingAction || !displayedThread) {
       return;
     }
 
@@ -497,7 +456,74 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
     rollbackThreadRef.current = null;
     rollbackHrefRef.current = null;
     router.refresh();
-  };
+  }, [client, currentMailboxId, currentRoute, displayedThread, notify, pathname, pendingAction, queryClient, roleTargets, router, searchParams, threadQuery]);
+
+  useEffect(() => {
+    if (!displayedThread || pendingAction || !displayedThread.isUnread) {
+      return;
+    }
+
+    if (autoReadThreadIdRef.current === displayedThread.id) {
+      return;
+    }
+
+    autoReadThreadIdRef.current = displayedThread.id;
+    void handleThreadAction({ type: 'mark-read' });
+  }, [displayedThread, handleThreadAction, pendingAction]);
+
+  if (state.kind === 'empty') {
+    return (
+      <ReaderStatePanel eyebrow="等待阅读" title="选择一个线程开始阅读">
+        左侧线程列表已经和路由状态同步。选择任意线程后，这里会按时间顺序展示消息元数据、正文与附件。
+      </ReaderStatePanel>
+    );
+  }
+
+  if (state.kind === 'loading') {
+    return (
+      <div aria-busy="true" className="space-y-3">
+        <div className="loading-shimmer h-20 rounded-[20px] border border-line/70 bg-canvas/55" />
+        <div className="loading-shimmer h-48 rounded-[24px] border border-line/70 bg-canvas/55" />
+        <div className="loading-shimmer h-40 rounded-[24px] border border-line/70 bg-canvas/55" />
+      </div>
+    );
+  }
+
+  if (state.kind === 'error') {
+    return (
+      <ReaderStatePanel eyebrow="阅读异常" title={state.message}>
+        当前线程的消息详情尚未成功返回，阅读器保持稳定布局，等待你重新选择或稍后重试。
+      </ReaderStatePanel>
+    );
+  }
+
+  if (state.kind === 'not-found') {
+    return (
+      <ReaderStatePanel eyebrow="线程不可用" title="所选线程已不存在或无法访问">
+        当前地址仍指向线程 <span className="font-mono text-ink">{state.threadId}</span>，但此消息已无法访问。可以返回左侧列表重新选择线程。
+      </ReaderStatePanel>
+    );
+  }
+
+  if (!displayedThread) {
+    return null;
+  }
+
+  const latestMessage = displayedThread.messages[displayedThread.messages.length - 1];
+  const composeReplyHref = buildComposeRouteHref({
+    accountId: displayedThread.accountId,
+    intent: 'reply',
+    messageId: latestMessage.id,
+    returnTo: currentRoute,
+    threadId: displayedThread.id,
+  });
+  const composeForwardHref = buildComposeRouteHref({
+    accountId: displayedThread.accountId,
+    intent: 'forward',
+    messageId: latestMessage.id,
+    returnTo: currentRoute,
+    threadId: displayedThread.id,
+  });
 
   const readerCanMove = currentMailboxId !== null && roleTargets.archiveId !== null;
   const readerCanDelete = currentMailboxId !== null && roleTargets.trashId !== null;
@@ -511,22 +537,16 @@ export function ThreadReaderPane({ mailboxItems = [] }: ThreadReaderPaneProps) {
       <div className="rounded-[22px] border border-line/70 bg-canvas/72 px-4 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-muted">线程时间线</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-ink">{displayedThread.subject}</h2>
-            <p className="mt-3 text-sm leading-7 text-muted">最近一封来自 {formatParticipants(latestMessage.from.length > 0 ? latestMessage.from : latestMessage.sender)}，共 {displayedThread.messageCount} 条消息。</p>
+            <h2 className="text-2xl font-semibold tracking-[-0.03em] text-ink">{displayedThread.subject}</h2>
           </div>
           <div className="flex flex-col gap-3 lg:items-end">
-            <div className="flex flex-wrap gap-2 text-[11px] text-muted">
-              <span className="max-w-full truncate rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em] sm:max-w-[16rem]">线程 {displayedThread.id}</span>
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{displayedThread.messageCount} 封</span>
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{displayedThread.isUnread ? '未读' : '已读'}</span>
-              <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">{displayedThread.isFlagged ? '已标星' : '常规'}</span>
-            </div>
             <MailActionStrip
               availability={{ archive: readerCanMove, delete: readerCanDelete, spam: readerCanSpam }}
               disabled={pendingAction !== null}
               onAction={handleThreadAction}
-              readLabel={displayedThread.isUnread ? '标记已读' : '标记未读'}
+              readAction={displayedThread.isUnread ? { type: 'mark-read' } : { type: 'mark-unread' }}
+              readLabel={displayedThread.isUnread ? '已读' : '未读'}
+              starAction={displayedThread.isFlagged ? { type: 'unstar' } : { type: 'star' }}
               starLabel={displayedThread.isFlagged ? '取消星标' : '加星'}
               testIdPrefix="reader"
               visibility={deleteOnlyReaderActions ? { archive: false, markRead: false, spam: false, star: false } : hideSpamReaderAction ? { spam: false } : undefined}

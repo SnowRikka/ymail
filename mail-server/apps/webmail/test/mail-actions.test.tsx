@@ -99,11 +99,11 @@ function createDeferred<T>() {
   return { promise, resolve };
 }
 
-function expectDeleteOnlyRowActions(threadId: string) {
+function expectRowActionsRemoved(threadId: string) {
   expect(screen.queryByTestId(`thread-row-read-${threadId}`)).not.toBeInTheDocument();
   expect(screen.queryByTestId(`thread-row-star-${threadId}`)).not.toBeInTheDocument();
   expect(screen.queryByTestId(`thread-row-archive-${threadId}`)).not.toBeInTheDocument();
-  expect(screen.getByTestId(`thread-row-delete-${threadId}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`thread-row-delete-${threadId}`)).not.toBeInTheDocument();
   expect(screen.queryByTestId(`thread-row-spam-${threadId}`)).not.toBeInTheDocument();
 }
 
@@ -124,14 +124,6 @@ function expectDeleteOnlyBulkActions() {
   expect(screen.queryByTestId('action-move')).not.toBeInTheDocument();
   expect(screen.getByTestId('action-delete')).toBeInTheDocument();
   expect(screen.queryByTestId('action-spam')).not.toBeInTheDocument();
-}
-
-function expectJunkRowActions(threadId: string) {
-  expect(screen.getByTestId(`thread-row-read-${threadId}`)).toBeInTheDocument();
-  expect(screen.getByTestId(`thread-row-star-${threadId}`)).toBeInTheDocument();
-  expect(screen.getByTestId(`thread-row-archive-${threadId}`)).toBeInTheDocument();
-  expect(screen.getByTestId(`thread-row-delete-${threadId}`)).toBeInTheDocument();
-  expect(screen.queryByTestId(`thread-row-spam-${threadId}`)).not.toBeInTheDocument();
 }
 
 function expectJunkReaderActions() {
@@ -416,32 +408,28 @@ describe('mail-actions', () => {
     });
   });
 
-  it('renders bulk action bar selectors after row selection', () => {
+  it('shows the bulk action bar only for multi-select and uses mail wording', () => {
     renderPanel({ email: { set: vi.fn() } } as unknown as JmapClient, [createRow('thread-1'), createRow('thread-2')]);
 
+    expect(screen.getByRole('button', { name: '批量操作' })).toBeInTheDocument();
+    expectRowActionsRemoved('thread-1');
+    expectRowActionsRemoved('thread-2');
     fireEvent.click(screen.getByTestId('thread-select-thread-1'));
 
+    expect(screen.queryByTestId('thread-bulk-bar')).not.toBeInTheDocument();
+    expect(screen.queryByText('已选择 1 个线程')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('thread-select-thread-2'));
+
     expect(screen.getByTestId('thread-bulk-bar')).toBeInTheDocument();
+    expect(screen.getByText('已选择 2 个邮件')).toBeInTheDocument();
+    expect(screen.queryByText('已选择 2 个线程')).not.toBeInTheDocument();
     expect(screen.getByTestId('action-mark-read')).toBeInTheDocument();
+    expect(screen.getByTestId('action-mark-read')).toHaveTextContent('已读');
     expect(screen.getByTestId('action-star')).toBeInTheDocument();
     expect(screen.getByTestId('action-move')).toBeInTheDocument();
     expect(screen.getByTestId('action-delete')).toBeInTheDocument();
     expect(screen.getByTestId('action-spam')).toBeInTheDocument();
-  });
-
-  it('rolls back optimistic single-item star action when upstream mutation fails', async () => {
-    const deferred = createDeferred<{ ok: false; error: { message: string } } | { ok: true; result: { kind: 'success'; response: { newState: string; oldState?: string; notUpdated?: Record<string, { description?: string }>; updated?: Record<string, null> } } }>();
-    renderPanel({ email: { set: vi.fn().mockReturnValue(deferred.promise) } } as unknown as JmapClient, [createRow('thread-1')]);
-
-    fireEvent.click(screen.getByTestId('thread-row-star-thread-1'));
-
-    expect(screen.getByRole('button', { name: '取消星标：subject-thread-1' })).toBeInTheDocument();
-    deferred.resolve({ ok: false, error: { message: 'mutation failed' } });
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '加星：subject-thread-1' })).toBeInTheDocument();
-      expect(mockNotify).toHaveBeenCalledWith('mutation failed');
-    });
   });
 
   it('optimistically archives selected rows and restores focus to next visible row', async () => {
@@ -465,21 +453,27 @@ describe('mail-actions', () => {
     await waitFor(() => expect(refetch).toHaveBeenCalled());
   });
 
-  it('invalidates mailbox shell after row delete removes a draft thread', async () => {
+  it('invalidates mailbox shell after bulk delete removes a draft thread', async () => {
     const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { newState: string; updated?: Record<string, null> } } }>();
     const refetch = vi.fn().mockResolvedValue(undefined);
 
     renderPanel(
       { email: { set: vi.fn().mockReturnValue(deferred.promise) } } as unknown as JmapClient,
-      [createRow('thread-1', { mailboxIds: { 'drafts-id': true } })],
+      [
+        createRow('thread-1', { mailboxIds: { 'drafts-id': true } }),
+        createRow('thread-2', { mailboxIds: { 'drafts-id': true } }),
+      ],
       refetch,
       getMailboxByRole(mailboxItems, 'drafts'),
     );
 
-    fireEvent.click(screen.getByTestId('thread-row-delete-thread-1'));
+    fireEvent.click(screen.getByTestId('thread-select-thread-1'));
+    fireEvent.click(screen.getByTestId('thread-select-thread-2'));
+    fireEvent.click(screen.getByTestId('action-delete'));
 
     await waitFor(() => {
       expect(screen.queryByTestId('thread-row-thread-1')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('thread-row-thread-2')).not.toBeInTheDocument();
     });
 
     deferred.resolve({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
@@ -491,110 +485,38 @@ describe('mail-actions', () => {
     });
   });
 
-  it('shows delete-only row and bulk actions in drafts sent and trash mailboxes', () => {
+  it('removes row actions and keeps delete-only bulk actions in drafts sent and trash mailboxes', () => {
     for (const role of ['drafts', 'sent', 'trash'] as const) {
       const mailbox = getMailboxByRole(mailboxItems, role);
       const threadId = `${role}-thread`;
       const panel = renderPanel(
         { email: { set: vi.fn() } } as unknown as JmapClient,
-        [createRow(threadId, { mailboxIds: { [mailbox.id]: true } })],
+        [createRow(threadId, { mailboxIds: { [mailbox.id]: true } }), createRow(`${threadId}-2`, { mailboxIds: { [mailbox.id]: true } })],
         vi.fn().mockResolvedValue(undefined),
         mailbox,
       );
 
-      expectDeleteOnlyRowActions(threadId);
+      expectRowActionsRemoved(threadId);
       fireEvent.click(screen.getByTestId(`thread-select-${threadId}`));
+      fireEvent.click(screen.getByTestId(`thread-select-${threadId}-2`));
       expectDeleteOnlyBulkActions();
       panel.unmount();
     }
   });
 
-  it('hides spam actions but keeps other row and bulk actions in junk mailbox', () => {
+  it('removes row actions and keeps non-spam bulk actions in junk mailbox', () => {
     const mailbox = getMailboxByRole(mailboxItems, 'junk');
     renderPanel(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      [createRow('junk-thread', { mailboxIds: { 'junk-id': true } })],
+      [createRow('junk-thread', { mailboxIds: { 'junk-id': true } }), createRow('junk-thread-2', { mailboxIds: { 'junk-id': true } })],
       vi.fn().mockResolvedValue(undefined),
       mailbox,
     );
 
-    expectJunkRowActions('junk-thread');
+    expectRowActionsRemoved('junk-thread');
     fireEvent.click(screen.getByTestId('thread-select-junk-thread'));
+    fireEvent.click(screen.getByTestId('thread-select-junk-thread-2'));
     expectJunkBulkActions();
-  });
-
-  it('moves junk row deletes to trash while clearing junk semantics', async () => {
-    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { newState: string; updated?: Record<string, null> } } }>();
-    const refetch = vi.fn().mockResolvedValue(undefined);
-    const setEmail = vi.fn().mockReturnValue(deferred.promise);
-
-    renderPanel(
-      { email: { set: setEmail } } as unknown as JmapClient,
-      [createRow('junk-thread', { emailIds: ['junk-email-1', 'junk-email-2'], mailboxIds: { 'junk-id': true } })],
-      refetch,
-      getMailboxByRole(mailboxItems, 'junk'),
-    );
-
-    fireEvent.click(screen.getByTestId('thread-row-delete-junk-thread'));
-
-    await waitFor(() => {
-      expect(setEmail).toHaveBeenCalledWith({
-        accountId: 'primary',
-        update: {
-          'junk-email-1': {
-            'keywords/$junk': null,
-            'keywords/$notjunk': true,
-            'mailboxIds/junk-id': null,
-            'mailboxIds/trash-id': true,
-          },
-          'junk-email-2': {
-            'keywords/$junk': null,
-            'keywords/$notjunk': true,
-            'mailboxIds/junk-id': null,
-            'mailboxIds/trash-id': true,
-          },
-        },
-      });
-    });
-
-    deferred.resolve({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
-
-    await waitFor(() => {
-      expect(refetch).toHaveBeenCalled();
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'junk-id'] });
-    });
-  });
-
-  it('destroys trash row emails instead of patching them back to trash', async () => {
-    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { destroyed?: readonly string[]; newState: string } } }>();
-    const refetch = vi.fn().mockResolvedValue(undefined);
-    const setEmail = vi.fn().mockReturnValue(deferred.promise);
-
-    renderPanel(
-      { email: { set: setEmail } } as unknown as JmapClient,
-      [createRow('trash-thread', { emailIds: ['trash-email-1', 'trash-email-2'], mailboxIds: { 'trash-id': true } })],
-      refetch,
-      getMailboxByRole(mailboxItems, 'trash'),
-    );
-
-    fireEvent.click(screen.getByTestId('thread-row-delete-trash-thread'));
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('thread-row-trash-thread')).not.toBeInTheDocument();
-      expect(setEmail).toHaveBeenCalledWith({
-        accountId: 'primary',
-        destroy: ['trash-email-1', 'trash-email-2'],
-      });
-    });
-
-    deferred.resolve({ ok: true, result: { kind: 'success', response: { destroyed: ['trash-email-1', 'trash-email-2'], newState: 'next-state' } } });
-
-    await waitFor(() => {
-      expect(refetch).toHaveBeenCalled();
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['mailbox-shell', 'primary'] });
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['thread-list', 'primary', 'trash-id'] });
-    });
   });
 
   it('projects deterministic removal and keyword updates', () => {
@@ -611,6 +533,7 @@ describe('mail-actions', () => {
     const deferred = createDeferred<{ ok: false; error: { message: string } }>();
     renderReader({ email: { set: vi.fn().mockReturnValue(deferred.promise) } } as unknown as JmapClient);
 
+    expect(screen.getByRole('heading', { name: 'Reader subject' })).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-mark-read')).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-star')).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-move')).toBeInTheDocument();
@@ -619,21 +542,76 @@ describe('mail-actions', () => {
     expect(screen.getByTestId('reader-reply')).toHaveAttribute('href', expect.stringContaining('intent=reply'));
     expect(screen.queryByTestId('reader-reply-all')).not.toBeInTheDocument();
     expect(screen.getByTestId('reader-forward')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('reader-action-mark-read'));
-
-    expect(screen.getByText('已读')).toBeInTheDocument();
+    expect(screen.queryByText('线程 thread-1')).not.toBeInTheDocument();
+    expect(screen.queryByText(/最近一封来自/)).not.toBeInTheDocument();
+    expect(screen.queryByText('第 1 封')).not.toBeInTheDocument();
+    expect(screen.queryByText('第 2 封')).not.toBeInTheDocument();
+    expect(screen.queryByText('2 封')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reader-action-mark-read')).toHaveTextContent('未读');
 
     deferred.resolve({ ok: false, error: { message: 'reader mutation failed' } });
 
     await waitFor(() => {
-      expect(screen.getByText('未读')).toBeInTheDocument();
+      expect(screen.getByTestId('reader-action-mark-read')).toHaveTextContent('已读');
       expect(mockNotify).toHaveBeenCalledWith('reader mutation failed');
     });
   });
 
+  it('auto-marks an unread thread as read once when the reader becomes ready', async () => {
+    const deferred = createDeferred<{ ok: true; result: { kind: 'success'; response: { newState: string; updated?: Record<string, null> } } }>();
+    const setEmail = vi.fn().mockReturnValue(deferred.promise);
+    const refetch = vi.fn().mockResolvedValue(undefined);
+
+    renderReader({ email: { set: setEmail } } as unknown as JmapClient, createReaderThread({ isUnread: true }), refetch);
+
+    await waitFor(() => {
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        update: {
+          'email-thread-1-1': { 'keywords/$seen': true },
+          'email-thread-1-2': { 'keywords/$seen': true },
+        },
+      });
+    });
+
+    deferred.resolve({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
+
+    await waitFor(() => {
+      expect(refetch).toHaveBeenCalledTimes(1);
+    });
+
+    expect(setEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-mark an already-read thread when the reader opens', () => {
+    const setEmail = vi.fn();
+
+    renderReader({ email: { set: setEmail } } as unknown as JmapClient, createReaderThread({ isUnread: false }));
+
+    expect(screen.getByTestId('reader-action-mark-read')).toHaveTextContent('未读');
+    expect(setEmail).not.toHaveBeenCalled();
+  });
+
+  it('uses the mark-unread mutation path for already-read reader threads', async () => {
+    const setEmail = vi.fn().mockResolvedValue({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } });
+
+    renderReader({ email: { set: setEmail } } as unknown as JmapClient, createReaderThread({ isUnread: false }));
+
+    fireEvent.click(screen.getByTestId('reader-action-mark-read'));
+
+    await waitFor(() => {
+      expect(setEmail).toHaveBeenCalledWith({
+        accountId: 'primary',
+        update: {
+          'email-thread-1-1': { 'keywords/$seen': null },
+          'email-thread-1-2': { 'keywords/$seen': null },
+        },
+      });
+    });
+  });
+
   it('renders reader action strip through the real MailShell composition path', async () => {
-    await renderShellReader({ email: { set: vi.fn() } } as unknown as JmapClient);
+    await renderShellReader({ email: { set: vi.fn().mockResolvedValue({ ok: true, result: { kind: 'success', response: { newState: 'next-state', updated: {} } } }) } } as unknown as JmapClient, createReaderThread({ isUnread: false }));
 
     expect(screen.getByTestId('reader-action-mark-read')).toBeInTheDocument();
     expect(screen.getByTestId('reader-action-star')).toBeInTheDocument();
@@ -648,7 +626,7 @@ describe('mail-actions', () => {
       mockSearch = `accountId=primary&mailboxId=${mailbox.id}&threadId=thread-1`;
       const reader = renderReader(
         { email: { set: vi.fn() } } as unknown as JmapClient,
-        createReaderThread({ mailboxIds: { [mailbox.id]: true }, subject: `${role} subject` }),
+        createReaderThread({ isUnread: false, mailboxIds: { [mailbox.id]: true }, subject: `${role} subject` }),
       );
 
       expectDeleteOnlyReaderActions();
@@ -662,25 +640,26 @@ describe('mail-actions', () => {
 
     renderReader(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
+      createReaderThread({ isUnread: false, mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
     );
 
     expectJunkReaderActions();
   });
 
-  it('hides archive on row bulk and reader surfaces when archive mailbox is unavailable', () => {
+  it('hides archive on list bulk and reader surfaces when archive mailbox is unavailable', () => {
     const mailboxItemsWithoutArchive = mailboxItems.filter((mailbox) => mailbox.role !== 'archive');
     const inboxMailbox = getMailboxByRole(mailboxItemsWithoutArchive, 'inbox');
     const panel = renderPanel(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      [createRow('thread-1')],
+      [createRow('thread-1'), createRow('thread-2')],
       vi.fn().mockResolvedValue(undefined),
       inboxMailbox,
       mailboxItemsWithoutArchive,
     );
 
-    expect(screen.queryByTestId('thread-row-archive-thread-1')).not.toBeInTheDocument();
+    expectRowActionsRemoved('thread-1');
     fireEvent.click(screen.getByTestId('thread-select-thread-1'));
+    fireEvent.click(screen.getByTestId('thread-select-thread-2'));
     expect(screen.queryByTestId('action-move')).not.toBeInTheDocument();
     expect(screen.getByTestId('action-mark-read')).toBeInTheDocument();
     expect(screen.getByTestId('action-star')).toBeInTheDocument();
@@ -691,7 +670,7 @@ describe('mail-actions', () => {
     mockSearch = 'accountId=primary&mailboxId=inbox-id&threadId=thread-1';
     renderReader(
       { email: { set: vi.fn() } } as unknown as JmapClient,
-      createReaderThread(),
+      createReaderThread({ isUnread: false }),
       vi.fn().mockResolvedValue(undefined),
       mailboxItemsWithoutArchive,
     );
@@ -709,7 +688,7 @@ describe('mail-actions', () => {
 
     renderReader(
       { email: { set: vi.fn().mockReturnValue(deferred.promise) } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'drafts-id': true }, subject: 'Draft subject' }),
+      createReaderThread({ isUnread: false, mailboxIds: { 'drafts-id': true }, subject: 'Draft subject' }),
     );
 
     fireEvent.click(screen.getByTestId('reader-action-delete'));
@@ -730,7 +709,7 @@ describe('mail-actions', () => {
 
     renderReader(
       { email: { set: setEmail } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'trash-id': true }, subject: 'Trash subject' }),
+      createReaderThread({ isUnread: false, mailboxIds: { 'trash-id': true }, subject: 'Trash subject' }),
     );
 
     fireEvent.click(screen.getByTestId('reader-action-delete'));
@@ -758,7 +737,7 @@ describe('mail-actions', () => {
 
     renderReader(
       { email: { set: setEmail } } as unknown as JmapClient,
-      createReaderThread({ mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
+      createReaderThread({ isUnread: false, mailboxIds: { 'junk-id': true }, subject: 'Junk subject' }),
     );
 
     fireEvent.click(screen.getByTestId('reader-action-delete'));

@@ -332,11 +332,15 @@ describe('accessibility', () => {
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
   });
 
-  it('exposes reader action and attachment labels for assistive tech', () => {
+  it('exposes reader action and attachment labels for assistive tech', async () => {
     mockPathname = '/mail/inbox';
     mockSearch = 'accountId=primary&threadId=thread-1';
 
-    render(<ThreadReaderPane mailboxItems={[{ accountId: 'primary', depth: 0, href: '/mail/inbox?accountId=primary', id: 'inbox-id', isActive: true, kind: 'system', name: '收件箱', role: 'inbox', totalCount: 8, unreadCount: 3 }]} />);
+    await act(async () => {
+      render(<ThreadReaderPane mailboxItems={[{ accountId: 'primary', depth: 0, href: '/mail/inbox?accountId=primary', id: 'inbox-id', isActive: true, kind: 'system', name: '收件箱', role: 'inbox', totalCount: 8, unreadCount: 3 }]} />);
+    });
+
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
 
     expect(screen.getByRole('button', { name: '仅本次会话允许远程图片' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '打开附件 report.pdf' })).toHaveAttribute('href', '/api/jmap/download/primary/blob-1');

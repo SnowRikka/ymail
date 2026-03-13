@@ -68,6 +68,11 @@ const mockSession = {
 
 const mockMailboxes = [
   { id: 'inbox-id', name: 'Inbox', role: 'inbox', totalThreads: 8, unreadThreads: 3 },
+  { id: 'sent-id', name: 'Sent', role: 'sent', totalThreads: 3, unreadThreads: 0 },
+  { id: 'drafts-id', name: 'Drafts', role: 'drafts', totalThreads: 1, unreadThreads: 0 },
+  { id: 'junk-id', name: 'Junk', role: 'junk', totalThreads: 1, unreadThreads: 0 },
+  { id: 'trash-id', name: 'Trash', role: 'trash', totalThreads: 0, unreadThreads: 0 },
+  { id: 'archive-id', name: 'Archive', role: 'archive', totalThreads: 4, unreadThreads: 0 },
   { id: 'projects-id', name: 'Projects', role: null, totalThreads: 2, unreadThreads: 0 },
 ] as const;
 
@@ -242,6 +247,21 @@ describe('search', () => {
     fireEvent.click(screen.getByTestId('search-filter-unread'));
 
     expect(mockReplace).toHaveBeenCalledWith(expect.stringContaining('unread=1'));
+  });
+
+  it('removes decorative search copy and localizes system mailbox scope labels', async () => {
+    await renderSearchShell();
+
+    expect(screen.queryByText('黑曜搜索轨道')).not.toBeInTheDocument();
+    expect(screen.queryByText('第 1 页')).not.toBeInTheDocument();
+    expect(screen.queryByText('关键词 contract')).not.toBeInTheDocument();
+    expect(screen.queryByText(/·\s*搜索结果/)).not.toBeInTheDocument();
+
+    const mailboxScope = screen.getByLabelText('邮箱范围');
+    const optionLabels = Array.from(mailboxScope.querySelectorAll('option')).map((option) => option.textContent);
+
+    expect(optionLabels).toEqual(expect.arrayContaining(['收件箱', '已发送', '草稿', '垃圾邮件', '废纸篓', '归档', 'Projects']));
+    expect(optionLabels).not.toEqual(expect.arrayContaining(['Inbox', 'Sent', 'Drafts', 'Junk', 'Trash', 'Archive']));
   });
 
   it('debounces URL updates while editing the top search field', async () => {

@@ -8,12 +8,12 @@ import { useMemo } from 'react';
 import type { MailShellListPaneProps } from '@/components/mail/mail-shell';
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { buildComposeRouteHref } from '@/lib/jmap/compose-core';
-import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
+import { formatMailboxDisplayName, type MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 import { buildSearchRouteHref, getSearchFieldLabel, hasActiveMailSearchCriteria, querySearchThreads, resolveSearchRouteState, type MailSearchRouteState, type SearchResultsPageData } from '@/lib/jmap/search';
 import { useJmapClient } from '@/lib/jmap/provider';
 
 function toSearchMailboxOptions(mailboxes: readonly MailboxNavigationItem[]) {
-  return mailboxes.map((mailbox) => ({ id: mailbox.id, label: mailbox.name }));
+  return mailboxes.map((mailbox) => ({ id: mailbox.id, label: formatMailboxDisplayName(mailbox) }));
 }
 
 function resolveMailboxLabel(mailboxes: readonly MailboxNavigationItem[], mailboxId: string | null) {
@@ -27,24 +27,7 @@ function resolveMailboxLabel(mailboxes: readonly MailboxNavigationItem[], mailbo
     return '指定邮箱';
   }
 
-  switch (mailbox.role) {
-    case 'archive':
-      return '归档';
-    case 'drafts':
-      return '草稿';
-    case 'important':
-      return '重要';
-    case 'inbox':
-      return '收件箱';
-    case 'junk':
-      return '垃圾邮件';
-    case 'sent':
-      return '已发送';
-    case 'trash':
-      return '废纸篓';
-    default:
-      return mailbox.name;
-  }
+  return formatMailboxDisplayName(mailbox);
 }
 
 function buildResolvedRouteState(routeState: MailSearchRouteState, activeAccountId: string | null, mailboxes: readonly MailboxNavigationItem[]) {
@@ -67,7 +50,7 @@ function focusResultButton(threadId: string | null) {
   button?.focus();
 }
 
-export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoading, shellErrorMessage, topline, viewModel }: MailShellListPaneProps) {
+export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoading, shellErrorMessage, viewModel }: MailShellListPaneProps) {
   const client = useJmapClient();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -148,19 +131,11 @@ export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoad
     <>
       <div className="rounded-[20px] border border-line/70 bg-canvas/82 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-muted">{topline}</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-ink">搜索结果</h2>
-          </div>
+          <h2 className="text-2xl font-semibold tracking-[-0.03em] text-ink">搜索结果</h2>
           <div className="text-right text-xs text-muted">
             <p>{selectedMailboxName}</p>
             <p className="mt-1">{getSearchFieldLabel(resolvedState.field)}匹配</p>
           </div>
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-muted">
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">黑曜搜索轨道</span>
-          <span className="max-w-full truncate rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em] sm:max-w-[16rem]">{resolvedState.query.length > 0 ? `关键词 ${resolvedState.query}` : '仅筛选条件'}</span>
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">第 {resolvedState.page} 页</span>
         </div>
 
         <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,160px)_minmax(0,1fr)]">

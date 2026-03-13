@@ -87,6 +87,18 @@ export function isMailboxRole(value: string | null | undefined): value is Mailbo
   return typeof value === 'string' && MAILBOX_ROLE_RANK.has(value as MailboxRole);
 }
 
+export function formatMailboxRoleLabel(role: string) {
+  return isMailboxRole(role) ? MAILBOX_ROLE_LABELS[role] : role;
+}
+
+export function formatMailboxDisplayName(mailbox: Pick<MailboxNavigationItem, 'name' | 'role'> | null | undefined) {
+  if (!mailbox) {
+    return '';
+  }
+
+  return mailbox.role ? formatMailboxRoleLabel(mailbox.role) : mailbox.name;
+}
+
 export function resolveMailboxPathContext(pathname: string, searchMailboxId?: string | null): MailboxPathContext {
   if (pathname === '/mail/inbox') {
     return {
@@ -176,7 +188,7 @@ function getMailboxName(mailbox: JmapMailboxObject) {
     return mailbox.name;
   }
 
-  return isMailboxRole(mailbox.role) ? MAILBOX_ROLE_LABELS[mailbox.role] : '未命名文件夹';
+  return mailbox.role ? formatMailboxRoleLabel(mailbox.role) : '未命名文件夹';
 }
 
 function partitionMailboxes(mailboxes: readonly JmapMailboxObject[]) {

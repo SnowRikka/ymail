@@ -11,7 +11,7 @@ import { GlobalSearchForm } from '@/components/search/global-search-form';
 import { SearchResultsPanel } from '@/components/search/search-results-panel';
 import type { SafeSessionSummary } from '@/lib/auth/types';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
-import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel } from '@/lib/jmap/mailbox-shell';
+import { buildMailboxShellViewModel, formatMailboxDisplayName, formatMailboxRoleLabel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel } from '@/lib/jmap/mailbox-shell';
 import type { JmapMailboxObject } from '@/lib/jmap/types';
 import { useRealtimeSync } from '@/lib/realtime/sync';
 import { cn } from '@/lib/utils';
@@ -53,37 +53,6 @@ function resolveMailboxCollectionData(data: MailboxCollectionData | readonly Jma
   }
 
   return 'list' in data ? data.list : data;
-}
-
-function formatMailboxRoleLabel(role: string) {
-  switch (role) {
-    case 'all':
-      return '全部邮件';
-    case 'archive':
-      return '归档';
-    case 'drafts':
-      return '草稿';
-    case 'important':
-      return '重要';
-    case 'inbox':
-      return '收件箱';
-    case 'junk':
-      return '垃圾邮件';
-    case 'sent':
-      return '已发送';
-    case 'trash':
-      return '废纸篓';
-    default:
-      return role;
-  }
-}
-
-function formatMailboxDisplayName(mailbox: Pick<MailboxNavigationItem, 'name' | 'role'> | null | undefined) {
-  if (!mailbox) {
-    return '';
-  }
-
-  return mailbox.role ? formatMailboxRoleLabel(mailbox.role) : mailbox.name;
 }
 
 export function MailShell(props: MailShellProps) {

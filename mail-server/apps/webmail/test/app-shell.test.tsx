@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,10 @@ import { MailShell } from '@/components/mail/mail-shell';
 import { AppProviders } from '@/components/providers/app-providers';
 import { isProtectedMailboxPath, toLoginRedirect } from '@/lib/auth/guard';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
+
+vi.mock('@/components/mail/logout-button', () => ({
+  LogoutButton: () => <button data-testid="logout-button" type="button">退出</button>,
+}));
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/mail/inbox',
@@ -42,10 +46,10 @@ async function renderShell() {
   render(
     <AppProviders>
       <MailShell
-        eyebrow="收件箱"
+        eyebrow="顶部眉文 App"
         intro="稳定的占位式邮箱壳层。"
         readerTitle="今日待读"
-        sectionTitle="线程"
+        sectionTitle=""
       >
         <div>reader</div>
       </MailShell>
@@ -172,12 +176,26 @@ describe('app-shell', () => {
     expect(screen.queryByText('自定义')).not.toBeInTheDocument();
     expect(screen.getByTestId('thread-list')).toBeInTheDocument();
     expect(screen.getByTestId('reader-pane')).toBeInTheDocument();
-    expect(screen.getByText('Primary')).toBeInTheDocument();
+    expect(screen.queryByText('顶部眉文 App')).not.toBeInTheDocument();
+    expect(screen.queryByText('今日待读')).not.toBeInTheDocument();
+    expect(screen.queryByText('稳定的占位式邮箱壳层。')).not.toBeInTheDocument();
+    expect(screen.queryByText(/收件箱\s*·/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('切换账号')).not.toBeInTheDocument();
     expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+\s*个账号/)).not.toBeInTheDocument();
     expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
-    expect(screen.getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.getByTestId('account-chip')).toBeInTheDocument();
+    expect(screen.getByTestId('account-chip-avatar')).toHaveTextContent('P');
+    expect(screen.getByTestId('account-chip-trigger')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getAllByTestId('new-mail-button')).toHaveLength(1);
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('account-chip-panel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Primary')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('logout-button')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('account-chip-trigger'));
+    expect(screen.getByTestId('account-chip-trigger')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('account-chip-panel')).toBeInTheDocument();
+    expect(screen.getByText('Primary')).toBeInTheDocument();
     expect(screen.getByTestId('logout-button')).toBeInTheDocument();
   });
 

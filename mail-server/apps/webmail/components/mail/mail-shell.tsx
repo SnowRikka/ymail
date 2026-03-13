@@ -1,8 +1,8 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useId, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 
 import { LogoutButton } from '@/components/mail/logout-button';
@@ -10,7 +10,6 @@ import { ThreadListPanel } from '@/components/mail/thread-list-panel';
 import { GlobalSearchForm } from '@/components/search/global-search-form';
 import { SearchResultsPanel } from '@/components/search/search-results-panel';
 import type { SafeSessionSummary } from '@/lib/auth/types';
-import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { buildMailboxShellViewModel, queryMailboxCollection, resolveMailboxAccountId, type MailboxCollectionData, type MailboxNavigationItem, type MailboxShellViewModel } from '@/lib/jmap/mailbox-shell';
 import type { JmapMailboxObject } from '@/lib/jmap/types';
@@ -87,12 +86,14 @@ function formatMailboxDisplayName(mailbox: Pick<MailboxNavigationItem, 'name' | 
   return mailbox.role ? formatMailboxRoleLabel(mailbox.role) : mailbox.name;
 }
 
-export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-list', listPaneVariant = 'threads', readerTitle, sectionTitle, sessionSummary }: MailShellProps) {
+export function MailShell(props: MailShellProps) {
+  const { children, listPaneTestId = 'thread-list', listPaneVariant = 'threads', sectionTitle, sessionSummary } = props;
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const client = useJmapClient();
+  const accountPanelId = useId();
   const [isHydrated, setIsHydrated] = useState(false);
+  const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -103,7 +104,6 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
   const accountIdFromUrl = searchParams.get('accountId');
   const searchMailboxId = searchParams.get('mailboxId');
   const activeAccountId = readySession ? resolveMailboxAccountId(readySession, accountIdFromUrl) : null;
-  const currentRoute = searchParams.toString() ? `${pathname}?${searchParams.toString()}` : pathname;
 
   const mailboxQuery = useQuery<MailboxCollectionData | readonly JmapMailboxObject[]>({
     enabled: Boolean(isHydrated && activeAccountId && readySession),
@@ -127,6 +127,7 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
   });
 
   const mailboxData = resolveMailboxCollectionData(mailboxQuery.data);
+  const normalizedSectionTitle = sectionTitle.trim();
   const viewModel: MailboxShellViewModel | null = readySession && activeAccountId
     ? buildMailboxShellViewModel({
         accountId: activeAccountId,
@@ -138,7 +139,9 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
     : null;
 
   const activeMailbox = viewModel?.mailboxItems.find((mailbox) => mailbox.isActive) ?? null;
-  const topline = viewModel?.activeMailboxRole ? `${formatMailboxRoleLabel(viewModel.activeMailboxRole)} · ${sectionTitle}` : sectionTitle;
+  const topline = viewModel?.activeMailboxRole
+    ? [formatMailboxRoleLabel(viewModel.activeMailboxRole), normalizedSectionTitle].filter(Boolean).join(' · ')
+    : normalizedSectionTitle;
   const shellErrorMessage = mailboxQuery.isError ? (mailboxQuery.error instanceof Error ? mailboxQuery.error.message : '请稍后重试。') : null;
   const isShellLoading = bootstrapQuery.isLoading || mailboxQuery.isLoading;
   const accountDisplayName = viewModel?.activeAccountLabel ?? sessionSummary?.username ?? '载入中';
@@ -160,10 +163,6 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
     viewModel,
   };
   const listPaneLabel = listPaneVariant === 'search' ? '搜索结果' : '线程列表';
-
-  const openFreshCompose = () => {
-    router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
-  };
 
   const listPane = listPaneVariant === 'search'
     ? <SearchResultsPanel {...listPaneProps} />
@@ -196,44 +195,47 @@ export function MailShell({ children, eyebrow, intro, listPaneTestId = 'thread-l
       </nav>
       <section className="shell-surface min-h-[calc(100vh-1rem)] rounded-[28px] border border-line/90 p-3 shadow-shell sm:min-h-[calc(100vh-1.5rem)] sm:rounded-[30px] lg:min-h-[calc(100vh-2.5rem)] lg:p-4">
         <header className="stage-reveal rounded-[24px] border border-line/80 bg-panel/92 px-4 py-4" style={{ ['--stage-delay' as string]: '0.04s' }}>
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.34em] text-accent/78">
-                <span>{eyebrow}</span>
-              </div>
-              <div>
-                <h1 className="text-3xl font-semibold tracking-[-0.04em] text-ink lg:text-[2.5rem]">{readerTitle}</h1>
-                <p className="mt-3 max-w-3xl text-sm leading-7 text-muted">{intro}</p>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 lg:min-w-[300px] xl:max-w-[420px] xl:items-end">
-              <div className="flex flex-wrap items-center justify-end gap-3 rounded-[20px] border border-line/70 bg-canvas/70 px-3 py-3 text-right">
-                <div aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/12 font-mono text-sm uppercase tracking-[0.2em] text-accent">
-                  {accountAvatarLabel}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-muted">当前账号</p>
-                  <p className="mt-1 truncate text-sm font-medium text-ink">{accountDisplayName}</p>
-                </div>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1">
+                <GlobalSearchForm accountId={activeAccountId} mailboxId={activeMailbox?.id ?? null} mailboxName={activeMailbox?.name ?? null} />
               </div>
 
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="relative flex items-center justify-center sm:shrink-0" data-testid="account-chip">
                 <button
-                  aria-label="新建邮件"
-                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                  data-testid="new-mail-button"
-                  onClick={openFreshCompose}
+                  aria-controls={accountPanelId}
+                  aria-expanded={isAccountPanelOpen}
+                  aria-label={isAccountPanelOpen ? '收起当前账号面板' : '展开当前账号面板'}
+                  className={cn(
+                    'inline-flex h-12 w-12 items-center justify-center rounded-full border bg-canvas/78 text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition hover:border-accent/45 hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+                    isAccountPanelOpen ? 'border-accent/45' : 'border-line/75',
+                  )}
+                  data-testid="account-chip-trigger"
+                  onClick={() => setIsAccountPanelOpen((open) => !open)}
                   type="button"
                 >
-                  <ComposeIcon className="h-4 w-4" />
-                  新建邮件
+                  <span
+                    aria-hidden="true"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/12 font-mono text-xs uppercase tracking-[0.18em]"
+                    data-testid="account-chip-avatar"
+                  >
+                    {accountAvatarLabel}
+                  </span>
                 </button>
-                <LogoutButton />
-              </div>
 
-              <div className="w-full xl:max-w-[420px]">
-                <GlobalSearchForm accountId={activeAccountId} mailboxId={activeMailbox?.id ?? null} mailboxName={activeMailbox?.name ?? null} />
+                {isAccountPanelOpen ? (
+                  <div
+                    className="absolute right-0 top-[calc(100%+0.75rem)] z-10 flex min-w-[220px] flex-col gap-3 rounded-[20px] border border-line/80 bg-panel/96 p-3 shadow-shell backdrop-blur"
+                    data-testid="account-chip-panel"
+                    id={accountPanelId}
+                  >
+                    <div className="min-w-0 rounded-[16px] border border-line/70 bg-canvas/60 px-3 py-2.5">
+                      <p className="text-[10px] uppercase tracking-[0.22em] text-muted">当前账号</p>
+                      <p className="mt-1 truncate text-sm font-medium text-ink">{accountDisplayName}</p>
+                    </div>
+                    <LogoutButton />
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

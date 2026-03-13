@@ -13,7 +13,7 @@ export interface ThreadBulkActionBarProps {
 }
 
 export function ThreadBulkActionBar({ archiveMailboxId, currentMailboxRole, disabled = false, onAction, selectedCount }: ThreadBulkActionBarProps) {
-  if (selectedCount <= 0) {
+  if (selectedCount < 2) {
     return null;
   }
 
@@ -22,10 +22,10 @@ export function ThreadBulkActionBar({ archiveMailboxId, currentMailboxRole, disa
 
   return (
     <div aria-live="polite" className="rounded-[20px] border border-accent/25 bg-accent/8 px-4 py-3" data-testid="thread-bulk-bar">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <p className="text-[11px] uppercase tracking-[0.28em] text-accent/80">批量操作</p>
-          <p className="mt-2 text-sm text-ink">已选择 {selectedCount} 个线程</p>
+          <p className="text-sm text-ink">已选择 {selectedCount} 个邮件</p>
         </div>
         <MailActionStrip availability={{ archive: Boolean(archiveMailboxId) }} disabled={disabled} onAction={onAction} visibility={deleteOnlyActions ? { archive: false, markRead: false, spam: false, star: false } : hideSpamAction ? { spam: false } : undefined} />
       </div>

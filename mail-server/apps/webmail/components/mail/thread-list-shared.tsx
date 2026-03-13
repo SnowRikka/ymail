@@ -100,9 +100,6 @@ export function ThreadRowCard<Row extends SharedThreadRow>({ actions, contextLab
               <div className="mt-3 flex justify-end gap-2">
                 {row.isFlagged ? <IndicatorBadge label="星标" /> : null}
                 {row.hasAttachment ? <IndicatorBadge label="附件" /> : null}
-                <span className="rounded-full border border-line/70 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-                  {row.messageCount} 封
-                </span>
               </div>
             </div>
           </div>

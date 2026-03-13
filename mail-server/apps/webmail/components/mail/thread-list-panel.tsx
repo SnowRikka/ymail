@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ThreadBulkActionBar } from '@/components/actions/thread-bulk-action-bar';
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { useToast } from '@/components/system/toast-region';
-import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
+import { buildComposeRouteHref, buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
 import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import { useJmapClient } from '@/lib/jmap/provider';
 import { getQueryClient } from '@/lib/query/client';
@@ -95,11 +95,13 @@ export function ThreadListPanel(props: ThreadListPanelProps) {
   });
 
   const selectedThreadId = routeState.selectedThreadId;
+  const mailboxRoute = buildThreadRouteHref(baseHref, { page: routeState.page });
   const currentRoute = buildThreadRouteHref(baseHref, { page: routeState.page, selectedThreadId });
   const rows = optimisticRows ?? threadQuery.data?.rows ?? [];
   const checkedThreadIdSet = useMemo(() => new Set(checkedThreadIds), [checkedThreadIds]);
   const unreadCount = activeMailbox?.unreadCount ?? 0;
   const totalCount = activeMailbox?.totalCount ?? 0;
+  const showsUnreadAndTotal = activeMailbox?.role === 'inbox' || activeMailbox?.role === 'junk';
   const areAllVisibleThreadsChecked = checkedThreadIds.length === rows.length && rows.length > 0;
   const openFreshCompose = () => {
     router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
@@ -115,6 +117,18 @@ export function ThreadListPanel(props: ThreadListPanelProps) {
   }, [optimisticRows, threadQuery.data?.rows]);
 
   const handleThreadSelect = (threadId: string) => {
+    const selectedRow = rows.find((row) => row.id === threadId) ?? null;
+
+    if (activeMailbox?.role === 'drafts' && selectedRow?.emailId) {
+      router.push(buildComposeRouteHref({
+        accountId: activeAccountId,
+        draftId: selectedRow.emailId,
+        intent: 'new',
+        returnTo: mailboxRoute,
+      }));
+      return;
+    }
+
     router.push(buildThreadRouteHref(baseHref, { page: routeState.page, selectedThreadId: threadId }));
   };
 
@@ -248,8 +262,12 @@ export function ThreadListPanel(props: ThreadListPanelProps) {
               新建邮件
             </button>
             <p className="col-start-1 row-start-2 min-w-0 text-sm text-muted" data-testid="thread-top-card-stats">
-              <span data-testid="thread-top-card-unread">{unreadCount} 未读</span>
-              <span aria-hidden="true"> · </span>
+              {showsUnreadAndTotal ? (
+                <>
+                  <span className="text-accent" data-testid="thread-top-card-unread">{unreadCount} 未读</span>
+                  <span aria-hidden="true"> · </span>
+                </>
+              ) : null}
               <span data-testid="thread-top-card-total">{totalCount} 个邮件</span>
             </p>
             <p className="col-start-1 row-start-3 self-end font-mono text-[11px] uppercase tracking-[0.22em] text-muted" data-testid="thread-top-card-page">第 {routeState.page} 页</p>

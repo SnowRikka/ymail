@@ -14,7 +14,7 @@ const mockRefresh = vi.fn();
 const mockReplace = vi.fn();
 let mockPathname = '/mail/inbox';
 let mockSearch = 'accountId=primary&mailboxId=inbox-id';
-let threadScenario: 'empty' | 'error' | 'page-1' | 'page-2' = 'page-1';
+let threadScenario: 'drafts' | 'empty' | 'error' | 'page-1' | 'page-2' = 'page-1';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mockPathname,
@@ -80,6 +80,8 @@ const mockSession = {
 
 const mockMailboxes = [
   { id: 'inbox-id', name: 'Inbox', role: 'inbox', totalThreads: 8, unreadThreads: 3 },
+  { id: 'junk-id', name: 'Junk', role: 'junk', totalThreads: 5, unreadThreads: 2 },
+  { id: 'drafts-id', name: 'Drafts', role: 'drafts', totalThreads: 1, unreadThreads: 0 },
   { id: 'custom-id', name: 'Projects', role: null, totalThreads: 2, unreadThreads: 0 },
 ] as const;
 
@@ -90,6 +92,7 @@ const threadPages = {
     pagination: { hasMore: true, page: 1, pageSize: 24, totalLoaded: 2 },
     rows: [
       {
+        emailId: 'email-1',
         hasAttachment: false,
         id: 'thread-1',
         isFlagged: true,
@@ -102,6 +105,7 @@ const threadPages = {
         subject: 'Thread one',
       },
       {
+        emailId: 'email-2',
         hasAttachment: true,
         id: 'thread-2',
         isFlagged: false,
@@ -125,6 +129,7 @@ const threadPages = {
     pagination: { hasMore: false, page: 2, pageSize: 24, totalLoaded: 3 },
     rows: [
       {
+        emailId: 'email-1',
         hasAttachment: false,
         id: 'thread-1',
         isFlagged: true,
@@ -137,6 +142,7 @@ const threadPages = {
         subject: 'Thread one',
       },
       {
+        emailId: 'email-2',
         hasAttachment: true,
         id: 'thread-2',
         isFlagged: false,
@@ -149,6 +155,7 @@ const threadPages = {
         subject: 'Thread two',
       },
       {
+        emailId: 'email-3',
         hasAttachment: false,
         id: 'thread-3',
         isFlagged: false,
@@ -205,6 +212,35 @@ function installQueryMocks() {
     },
     'page-2': {
       data: threadPages['page-2'],
+      isError: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    },
+    drafts: {
+      data: {
+        accountId: 'primary',
+        mailboxId: 'drafts-id',
+        pagination: { hasMore: false, page: 1, pageSize: 24, totalLoaded: 1 },
+        rows: [
+          {
+            emailId: 'draft-email-1',
+            hasAttachment: false,
+            id: 'draft-thread-1',
+            isFlagged: false,
+            isUnread: false,
+            messageCount: 1,
+            preview: 'Draft preview',
+            receivedAt: '2026-03-10T08:00:00.000Z',
+            relativeTimeLabel: '今天',
+            senderLabel: 'Owner',
+            subject: 'Draft subject',
+          },
+        ],
+        sync: {
+          emailQueryState: 'draft-query-state',
+          threadState: 'draft-thread-state',
+        },
+      },
       isError: false,
       isLoading: false,
       refetch: vi.fn(),
@@ -279,6 +315,7 @@ describe('thread-list', () => {
     expect(within(screen.getByTestId('thread-list')).getByRole('heading', { level: 2, name: '收件箱' })).toBeInTheDocument();
     expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-stats')).toHaveTextContent('3 未读 · 8 个邮件');
     expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-unread')).toHaveTextContent('3 未读');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-unread')).toHaveClass('text-accent');
     expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-total')).toHaveTextContent('8 个邮件');
     expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-page')).toHaveTextContent('第 1 页');
     expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-selection-toggle')).toHaveTextContent('批量操作');
@@ -302,6 +339,21 @@ describe('thread-list', () => {
     expect(screen.getByTestId('thread-load-more')).toBeInTheDocument();
   });
 
+  it('renders dual counts for junk top cards', async () => {
+    mockPathname = '/mail/mailbox/junk-id';
+    mockSearch = 'accountId=primary&mailboxId=junk-id';
+
+    await renderShell();
+
+    const threadList = screen.getByTestId('thread-list');
+
+    expect(within(threadList).getByRole('heading', { level: 2, name: '垃圾邮件' })).toBeInTheDocument();
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('2 未读 · 5 个邮件');
+    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveTextContent('2 未读');
+    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveClass('text-accent');
+    expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('5 个邮件');
+  });
+
   it('syncs thread selection into route state', async () => {
     await renderShell();
 
@@ -319,6 +371,35 @@ describe('thread-list', () => {
 
     expect(screen.getByTestId('thread-row-thread-3')).toHaveAttribute('aria-current', 'true');
     expect(screen.queryByTestId('thread-load-more')).not.toBeInTheDocument();
+  });
+
+  it('opens drafts rows in editable compose instead of reader view', async () => {
+    threadScenario = 'drafts';
+    mockPathname = '/mail/drafts';
+    mockSearch = 'accountId=primary&mailboxId=drafts-id';
+
+    await renderShell();
+
+    fireEvent.click(screen.getByTestId('thread-row-draft-thread-1'));
+
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=primary&draftId=draft-email-1'));
+    expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('returnTo='));
+    expect(mockPush).not.toHaveBeenCalledWith(expect.stringContaining('threadId=draft-thread-1'));
+  });
+
+  it('renders total-only stats for non-inbox non-junk top cards', async () => {
+    threadScenario = 'drafts';
+    mockPathname = '/mail/drafts';
+    mockSearch = 'accountId=primary&mailboxId=drafts-id';
+
+    await renderShell();
+
+    const threadList = screen.getByTestId('thread-list');
+
+    expect(within(threadList).getByRole('heading', { level: 2, name: '草稿' })).toBeInTheDocument();
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('1 个邮件');
+    expect(within(threadList).queryByTestId('thread-top-card-unread')).not.toBeInTheDocument();
+    expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('1 个邮件');
   });
 
   it('uses replace for deterministic load-more pagination', async () => {

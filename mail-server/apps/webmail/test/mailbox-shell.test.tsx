@@ -144,6 +144,7 @@ const mockMailboxes = [
   { id: 'project-root', name: 'Projects', parentId: null, role: null, sortOrder: 20, totalThreads: 0, unreadThreads: 0 },
   { id: 'inbox-id', name: 'Inbox', role: 'inbox', sortOrder: 10, totalThreads: 12, unreadThreads: 4 },
   { id: 'drafts-id', name: 'Drafts', role: 'drafts', sortOrder: 30, totalThreads: 2, unreadThreads: 1 },
+  { id: 'junk-id', name: 'Junk', role: 'junk', sortOrder: 35, totalThreads: 6, unreadThreads: 2 },
   { id: 'project-child', name: 'Alpha', parentId: 'project-root', role: null, sortOrder: 10, totalThreads: 0, unreadThreads: 0 },
   { id: 'archive-id', name: 'Archive', role: 'archive', sortOrder: 40, totalThreads: 8, unreadThreads: 0 },
   { id: 'sent-id', name: 'Sent', role: 'sent', sortOrder: 20, totalThreads: 2, unreadThreads: 0 },
@@ -212,7 +213,7 @@ describe('mailbox-shell', () => {
       session: mockSession as never,
     });
 
-    expect(viewModel.systemItems.map((item) => item.id)).toEqual(['inbox-id', 'sent-id', 'drafts-id', 'trash-id', 'archive-id']);
+    expect(viewModel.systemItems.map((item) => item.id)).toEqual(['inbox-id', 'sent-id', 'drafts-id', 'junk-id', 'trash-id', 'archive-id']);
     expect(viewModel.customItems.map((item) => item.id)).toEqual(['project-root', 'project-child']);
   });
 
@@ -278,15 +279,28 @@ describe('mailbox-shell', () => {
 
     expect(within(threadList).getByTestId('thread-top-card')).toBeInTheDocument();
     expect(within(threadList).getByRole('heading', { level: 2, name: '归档' })).toBeInTheDocument();
-    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('0 未读 · 8 个邮件');
-    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveTextContent('0 未读');
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('8 个邮件');
+    expect(within(threadList).queryByTestId('thread-top-card-unread')).not.toBeInTheDocument();
     expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('8 个邮件');
     expect(within(threadList).getByTestId('thread-top-card-page')).toHaveTextContent('第 1 页');
     expect(within(threadList).getByTestId('thread-top-card-selection-toggle')).toHaveTextContent('批量操作');
     expect(within(threadList).getByTestId('new-mail-button')).toHaveClass('col-start-2', 'row-start-1');
     expect(within(threadList).getByTestId('thread-top-card-selection-toggle')).toHaveClass('col-start-2', 'row-start-3');
-    expect(within(threadList).getByTestId('thread-top-card-stats')).toContainElement(within(threadList).getByTestId('thread-top-card-unread'));
     expect(within(threadList).getByTestId('thread-top-card-stats')).toContainElement(within(threadList).getByTestId('thread-top-card-total'));
+  });
+
+  it('keeps junk top cards on dual unread and total counts', async () => {
+    mockPathname = '/mail/mailbox/junk-id';
+
+    await renderShell();
+
+    const threadList = screen.getByTestId('thread-list');
+
+    expect(within(threadList).getByRole('heading', { level: 2, name: '垃圾邮件' })).toBeInTheDocument();
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('2 未读 · 6 个邮件');
+    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveTextContent('2 未读');
+    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveClass('text-accent');
+    expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('6 个邮件');
   });
 
   it('renders the fallback mail account instead of a pseudo-loaded shell when primary mail account is invalid', async () => {

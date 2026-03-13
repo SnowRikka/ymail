@@ -17,6 +17,7 @@ export interface ThreadListRouteState {
 }
 
 export interface ThreadListRow {
+  readonly emailId: string;
   readonly emailIds: readonly string[];
   readonly hasAttachment: boolean;
   readonly id: string;
@@ -169,6 +170,7 @@ function toThreadListRow(representative: ThreadRepresentative, emailIds: readonl
   const { email, threadId } = representative;
 
   return {
+    emailId: email.id,
     emailIds,
     hasAttachment: email.hasAttachment === true,
     id: threadId,

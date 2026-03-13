@@ -1,4 +1,5 @@
 import type { ReaderMessage, ReaderParticipant, ReaderThread } from '@/lib/jmap/message-reader';
+import type { JmapEmailAddress, JmapEmailBodyPart, JmapEmailBodyValue, JmapEmailObject } from '@/lib/jmap/types';
 
 export type ComposeIntent = 'forward' | 'new' | 'reply';
 
@@ -78,8 +79,16 @@ export interface ComposeDraftRecord {
   readonly updatedAt: number;
 }
 
+export interface ComposeHydratedServerDraft {
+  readonly attachments: readonly ComposeStoredAttachment[];
+  readonly form: ComposeFormState;
+  readonly identityEmail: string | null;
+  readonly serverDraftId: string;
+}
+
 const COMPOSE_ROUTE_ORIGIN = 'https://compose.local';
 const EMPTY_LABEL = '未填写';
+const FRESH_COMPOSE_DRAFT_ID_PREFIX = 'fresh-';
 const FORWARD_HEADER = '-------- 转发邮件 --------';
 const FORWARD_SUBJECT_PREFIX = '转发：';
 const NEW_INTENT: ComposeIntent = 'new';
@@ -232,6 +241,64 @@ function normalizeComposeDraftId(value: string | null) {
   return draftId.length > 0 ? draftId : null;
 }
 
+function readComposeBodyValue(bodyValues: Readonly<Record<string, JmapEmailBodyValue>> | undefined, partId: string | undefined) {
+  if (!bodyValues || !partId) {
+    return null;
+  }
+
+  const entry = bodyValues[partId];
+  return typeof entry?.value === 'string' ? entry.value : null;
+}
+
+function collectComposeBodyValue(parts: readonly JmapEmailBodyPart[] | undefined, bodyValues: Readonly<Record<string, JmapEmailBodyValue>> | undefined) {
+  const values = (parts ?? [])
+    .map((part) => readComposeBodyValue(bodyValues, part.partId))
+    .filter((value): value is string => value !== null);
+
+  return values.length > 0 ? values.join('\n\n') : '';
+}
+
+function serializeComposeAddress(address: JmapEmailAddress) {
+  const email = typeof address.email === 'string' ? address.email.trim() : '';
+  const name = typeof address.name === 'string' ? address.name.trim() : '';
+
+  if (email.length === 0) {
+    return null;
+  }
+
+  return name.length > 0 ? `${name} <${email}>` : email;
+}
+
+function serializeComposeAddresses(addresses: readonly JmapEmailAddress[] | undefined) {
+  return (addresses ?? [])
+    .map(serializeComposeAddress)
+    .filter((value): value is string => value !== null)
+    .join(', ');
+}
+
+function toStoredDraftAttachment(part: JmapEmailBodyPart): ComposeStoredAttachment | null {
+  const blobId = typeof part.blobId === 'string' && part.blobId.length > 0 ? part.blobId : null;
+
+  if (!blobId) {
+    return null;
+  }
+
+  return {
+    blobId,
+    errorMessage: null,
+    name: typeof part.name === 'string' && part.name.trim().length > 0 ? part.name.trim() : '未命名附件',
+    size: typeof part.size === 'number' && Number.isFinite(part.size) ? part.size : 0,
+    status: 'uploaded',
+    type: typeof part.type === 'string' && part.type.length > 0 ? part.type : null,
+  };
+}
+
+function normalizeComposeIdentityEmail(addresses: readonly JmapEmailAddress[] | undefined) {
+  const value = addresses?.[0]?.email;
+  const email = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return email.length > 0 ? email : null;
+}
+
 function quotePlainText(value: string) {
   return value
     .replace(/\r\n/g, '\n')
@@ -298,6 +365,10 @@ export function createFreshComposeDraftId() {
   return `fresh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function isFreshComposeDraftId(value: string | null | undefined) {
+  return typeof value === 'string' && value.startsWith(FRESH_COMPOSE_DRAFT_ID_PREFIX);
+}
+
 export function buildComposeDraftKey(routeState: Pick<ComposeRouteState, 'accountId' | 'draftId' | 'intent' | 'messageId' | 'threadId'>) {
   if (routeState.intent === 'new' && routeState.draftId) {
     return [
@@ -350,6 +421,27 @@ export function buildFreshComposeRouteHref(routeState: Pick<ComposeRouteState, '
     intent: 'new',
     returnTo: routeState.returnTo,
   });
+}
+
+export function hydrateComposeServerDraft(email: JmapEmailObject): ComposeHydratedServerDraft | null {
+  const serverDraftId = normalizeComposeDraftId(email.id);
+
+  if (!serverDraftId) {
+    return null;
+  }
+
+  return {
+    attachments: (email.attachments ?? [])
+      .map((part) => toStoredDraftAttachment(part))
+      .filter((part): part is ComposeStoredAttachment => part !== null),
+    form: {
+      body: collectComposeBodyValue(email.textBody, email.bodyValues),
+      subject: email.subject?.trim() ?? '',
+      to: serializeComposeAddresses(email.to),
+    },
+    identityEmail: normalizeComposeIdentityEmail(email.from),
+    serverDraftId,
+  };
 }
 
 export function areComposeFormStatesEqual(left: ComposeFormState, right: ComposeFormState) {

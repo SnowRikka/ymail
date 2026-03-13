@@ -6,6 +6,7 @@ test-results/
 **/test-results/
 .next/
 **/.next/
+tmp/
 
 参考风格.html
 

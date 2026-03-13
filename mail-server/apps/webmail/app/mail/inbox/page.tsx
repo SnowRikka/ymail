@@ -10,7 +10,7 @@ export default async function InboxPage() {
       eyebrow="收件箱"
       intro="桌面端保持三栏阅读节奏，移动端依次聚焦线程列表、阅读器与系统邮箱。"
       readerTitle="邮件"
-      sectionTitle="活动邮箱"
+      sectionTitle=""
       sessionSummary={sessionSummary}
     >
       <ThreadReaderPane />

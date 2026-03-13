@@ -9,7 +9,7 @@ import { ThreadBulkActionBar } from '@/components/actions/thread-bulk-action-bar
 import { ThreadListMessageCard, ThreadListSkeleton, ThreadRowCard } from '@/components/mail/thread-list-shared';
 import { useToast } from '@/components/system/toast-region';
 import { buildFreshComposeRouteHref } from '@/lib/jmap/compose-core';
-import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, isDeleteOnlyMailboxRole, resolveMailboxRoleTargets, shouldHideSpamActionForMailboxRole, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
+import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, resolveMailboxRoleTargets, syncMailActionQueries, toMailActionThreadRef, type MailActionRequest } from '@/lib/jmap/mail-actions';
 import { useJmapClient } from '@/lib/jmap/provider';
 import { getQueryClient } from '@/lib/query/client';
 import { buildThreadRouteHref, queryMailboxThreads, resolveThreadListRouteState, type ThreadListPageData, type ThreadListRow } from '@/lib/jmap/thread-list';
@@ -45,7 +45,8 @@ function isRemovalAction(action: MailActionRequest) {
   return action.type === 'archive' || action.type === 'delete' || action.type === 'move' || action.type === 'not-spam' || action.type === 'spam';
 }
 
-export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage, topline }: ThreadListPanelProps) {
+export function ThreadListPanel(props: ThreadListPanelProps) {
+  const { activeAccountId, activeMailbox, activeMailboxName, isShellLoading, mailboxItems, shellErrorMessage } = props;
   const client = useJmapClient();
   const queryClient = useMemo(() => getQueryClient(), []);
   const router = useRouter();
@@ -97,9 +98,9 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
   const currentRoute = buildThreadRouteHref(baseHref, { page: routeState.page, selectedThreadId });
   const rows = optimisticRows ?? threadQuery.data?.rows ?? [];
   const checkedThreadIdSet = useMemo(() => new Set(checkedThreadIds), [checkedThreadIds]);
-  const deleteOnlyRowActions = isDeleteOnlyMailboxRole(activeMailbox?.role ?? null);
-  const hideSpamRowAction = shouldHideSpamActionForMailboxRole(activeMailbox?.role ?? null);
-
+  const unreadCount = activeMailbox?.unreadCount ?? 0;
+  const totalCount = activeMailbox?.totalCount ?? 0;
+  const areAllVisibleThreadsChecked = checkedThreadIds.length === rows.length && rows.length > 0;
   const openFreshCompose = () => {
     router.push(buildFreshComposeRouteHref({ accountId: activeAccountId, returnTo: currentRoute }));
   };
@@ -227,37 +228,41 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
   };
 
   const handleBulkAction = (action: MailActionRequest) => void runAction(action, checkedThreadIds);
-  const handleRowStarAction = (row: ThreadListRow) => void runAction({ type: row.isFlagged ? 'unstar' : 'star' }, [row.id]);
-  const handleRowReadAction = (row: ThreadListRow) => void runAction({ type: row.isUnread ? 'mark-read' : 'mark-unread' }, [row.id]);
-  const handleRowArchiveAction = (row: ThreadListRow) => void runAction({ type: 'archive' }, [row.id]);
-  const handleRowDeleteAction = (row: ThreadListRow) => void runAction({ type: 'delete' }, [row.id]);
-  const handleRowSpamAction = (row: ThreadListRow) => void runAction({ type: 'spam' }, [row.id]);
-
   return (
     <>
-      <div className="rounded-[20px] border border-line/70 bg-canvas/82 px-4 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-muted">{topline}</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-ink">{activeMailboxName}</h2>
-          </div>
-          <div className="text-right text-xs text-muted">
-            <p>{activeMailbox?.unreadCount ?? 0} 未读</p>
-            <p className="mt-1">{activeMailbox?.totalCount ?? 0} 个线程</p>
+      <div className="relative overflow-hidden rounded-[24px] border border-line/80 bg-panel/78 p-[1px]" data-testid="thread-top-card">
+        <div aria-hidden="true" className="pointer-events-none absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-accent/10 blur-3xl" />
+        <div aria-hidden="true" className="pointer-events-none absolute -right-8 top-0 h-32 w-32 rounded-full bg-accent/14 blur-3xl" />
+        <div className="relative rounded-[23px] bg-[linear-gradient(145deg,rgb(var(--color-panel)/0.96),rgb(var(--color-canvas)/0.92))] px-4 py-4 sm:px-5 sm:py-5">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-4">
+            <div className="min-w-0">
+              <h2 className="text-[2.25rem] font-semibold tracking-[-0.05em] text-white sm:text-[2.6rem]">{activeMailboxName}</h2>
+            </div>
             <button
-              aria-pressed={checkedThreadIds.length === rows.length && rows.length > 0}
-              className="mt-3 inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent"
+              aria-label="新建邮件"
+              className="col-start-2 row-start-1 inline-flex min-h-11 items-center justify-center gap-2 self-start justify-self-end rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              data-testid="new-mail-button"
+              onClick={openFreshCompose}
+              type="button"
+            >
+              新建邮件
+            </button>
+            <p className="col-start-1 row-start-2 min-w-0 text-sm text-muted" data-testid="thread-top-card-stats">
+              <span data-testid="thread-top-card-unread">{unreadCount} 未读</span>
+              <span aria-hidden="true"> · </span>
+              <span data-testid="thread-top-card-total">{totalCount} 个邮件</span>
+            </p>
+            <p className="col-start-1 row-start-3 self-end font-mono text-[11px] uppercase tracking-[0.22em] text-muted" data-testid="thread-top-card-page">第 {routeState.page} 页</p>
+            <button
+              aria-pressed={areAllVisibleThreadsChecked}
+              className="col-start-2 row-start-3 inline-flex min-h-11 items-center justify-center self-end justify-self-end rounded-2xl border border-line/70 bg-canvas/48 px-4 py-3 text-sm text-ink transition hover:border-accent/40 hover:text-accent"
+              data-testid="thread-top-card-selection-toggle"
               onClick={toggleAllVisible}
               type="button"
             >
-              {checkedThreadIds.length === rows.length && rows.length > 0 ? '清空选择' : '选择当前页'}
+              {areAllVisibleThreadsChecked ? '清空选择' : '批量操作'}
             </button>
           </div>
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-muted">
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">黑曜线程栈</span>
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">当前邮箱视图</span>
-          <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">第 {routeState.page} 页</span>
         </div>
       </div>
 
@@ -336,68 +341,6 @@ export function ThreadListPanel({ activeAccountId, activeMailbox, activeMailboxN
             {rows.map((row, index) => (
               <li key={row.id}>
                 <ThreadRowCard
-                  actions={
-                    <>
-                      {deleteOnlyRowActions ? null : (
-                        <>
-                          <button
-                            aria-label={`${row.isUnread ? '标记已读' : '标记未读'}：${row.subject}`}
-                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                            data-testid={`thread-row-read-${row.id}`}
-                            disabled={pendingActionLabel !== null}
-                            onClick={() => handleRowReadAction(row)}
-                            type="button"
-                          >
-                            {row.isUnread ? '已读' : '未读'}
-                          </button>
-                          <button
-                            aria-label={`${row.isFlagged ? '取消星标' : '加星'}：${row.subject}`}
-                            className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                            data-testid={`thread-row-star-${row.id}`}
-                            disabled={pendingActionLabel !== null}
-                            onClick={() => handleRowStarAction(row)}
-                            type="button"
-                          >
-                            {row.isFlagged ? '取消星标' : '加星'}
-                          </button>
-                          {roleTargets.archiveId === null ? null : (
-                            <button
-                              aria-label={`归档线程：${row.subject}`}
-                              className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                              data-testid={`thread-row-archive-${row.id}`}
-                              disabled={pendingActionLabel !== null}
-                              onClick={() => handleRowArchiveAction(row)}
-                              type="button"
-                            >
-                              归档
-                            </button>
-                          )}
-                        </>
-                      )}
-                      <button
-                        aria-label={`删除线程：${row.subject}`}
-                        className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                        data-testid={`thread-row-delete-${row.id}`}
-                        disabled={pendingActionLabel !== null || roleTargets.trashId === null}
-                        onClick={() => handleRowDeleteAction(row)}
-                        type="button"
-                      >
-                        删除
-                      </button>
-                      {hideSpamRowAction ? null : (
-                        <button
-                          aria-label={`标记线程为垃圾邮件：${row.subject}`}
-                          className="inline-flex min-h-9 items-center justify-center rounded-xl border border-line/70 px-3 py-2 text-xs text-ink transition hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                          data-testid={`thread-row-spam-${row.id}`}
-                          disabled={pendingActionLabel !== null || roleTargets.junkId === null}
-                          onClick={() => handleRowSpamAction(row)}
-                          type="button"
-                        >
-                          垃圾邮件
-                        </button>
-                      )}
-                    </>
-                  }
                   index={index}
                   isSelected={row.id === selectedThreadId}
                   isSelectionChecked={checkedThreadIdSet.has(row.id)}

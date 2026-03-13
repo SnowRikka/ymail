@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,8 +11,8 @@ import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 async function renderShell() {
   render(
     <ToastProvider>
-      <MailShell eyebrow="收件箱" intro="intro" readerTitle="reader" sectionTitle="list">
-        <div>reader</div>
+      <MailShell eyebrow="顶部眉文" intro="顶部说明文本" readerTitle="顶部标题文本" sectionTitle="list">
+        <div>reader content</div>
       </MailShell>
     </ToastProvider>,
   );
@@ -245,14 +245,48 @@ describe('mailbox-shell', () => {
     expect(screen.queryByTestId('mailbox-item-project-root')).not.toBeInTheDocument();
     expect(screen.queryByText('自定义')).not.toBeInTheDocument();
     expect(screen.queryByText('黑曜工作台')).not.toBeInTheDocument();
-    expect(screen.getByText('Primary account')).toBeInTheDocument();
+    expect(screen.queryByText('顶部眉文')).not.toBeInTheDocument();
+    expect(screen.queryByText('顶部标题文本')).not.toBeInTheDocument();
+    expect(screen.queryByText('顶部说明文本')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('切换账号')).not.toBeInTheDocument();
     expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+\s*个账号/)).not.toBeInTheDocument();
     expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
-    expect(screen.getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.getByTestId('account-chip')).toBeInTheDocument();
+    expect(screen.getByTestId('global-search')).toBeInTheDocument();
+    expect(screen.getByTestId('account-chip-avatar')).toHaveTextContent('P');
+    expect(screen.getByTestId('account-chip-trigger')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('account-chip-panel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Primary account')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('logout-button')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('account-chip-trigger'));
+    expect(screen.getByTestId('account-chip-trigger')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('account-chip-panel')).toBeInTheDocument();
+    expect(screen.getByText('Primary account')).toBeInTheDocument();
     expect(screen.getByTestId('logout-button')).toBeInTheDocument();
+    expect(screen.getAllByTestId('new-mail-button')).toHaveLength(1);
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
     expect(screen.getByTestId('thread-row-thread-project-1')).toBeInTheDocument();
+  });
+
+  it('reuses the shared top card styling for system mailbox routes', async () => {
+    mockPathname = '/mail/mailbox/archive-id';
+
+    await renderShell();
+
+    const threadList = screen.getByTestId('thread-list');
+
+    expect(within(threadList).getByTestId('thread-top-card')).toBeInTheDocument();
+    expect(within(threadList).getByRole('heading', { level: 2, name: '归档' })).toBeInTheDocument();
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toHaveTextContent('0 未读 · 8 个邮件');
+    expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveTextContent('0 未读');
+    expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('8 个邮件');
+    expect(within(threadList).getByTestId('thread-top-card-page')).toHaveTextContent('第 1 页');
+    expect(within(threadList).getByTestId('thread-top-card-selection-toggle')).toHaveTextContent('批量操作');
+    expect(within(threadList).getByTestId('new-mail-button')).toHaveClass('col-start-2', 'row-start-1');
+    expect(within(threadList).getByTestId('thread-top-card-selection-toggle')).toHaveClass('col-start-2', 'row-start-3');
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toContainElement(within(threadList).getByTestId('thread-top-card-unread'));
+    expect(within(threadList).getByTestId('thread-top-card-stats')).toContainElement(within(threadList).getByTestId('thread-top-card-total'));
   });
 
   it('renders the fallback mail account instead of a pseudo-loaded shell when primary mail account is invalid', async () => {
@@ -273,6 +307,7 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
+    fireEvent.click(screen.getByTestId('account-chip-trigger'));
     expect(screen.getByText('Primary account')).toBeInTheDocument();
     expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'Projects' })).toBeInTheDocument();
@@ -285,6 +320,7 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
+    fireEvent.click(screen.getByTestId('account-chip-trigger'));
     expect(screen.getByText('Primary account')).toBeInTheDocument();
     expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: '收件箱' })).toBeInTheDocument();
@@ -296,9 +332,11 @@ describe('mailbox-shell', () => {
 
     await renderShell();
 
+    expect(screen.getByTestId('account-chip-avatar')).toHaveTextContent('S');
+    fireEvent.click(screen.getByTestId('account-chip-trigger'));
     expect(screen.getByText(/Shared ops/)).toBeInTheDocument();
     expect(screen.queryByTestId('account-switcher')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('new-mail-button'));
+    fireEvent.click(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=shared'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));
   });
@@ -309,6 +347,7 @@ describe('mailbox-shell', () => {
     await renderShell();
 
     expect(screen.getByTestId('thread-empty-state')).toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('thread-empty-new-mail-button'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=primary'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));

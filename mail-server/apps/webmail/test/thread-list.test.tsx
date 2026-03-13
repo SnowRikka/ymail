@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -273,8 +273,32 @@ describe('thread-list', () => {
     await renderShell();
 
     expect(screen.getByTestId('thread-list')).toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card')).toBeInTheDocument();
+    expect(screen.getAllByTestId('new-mail-button')).toHaveLength(1);
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-list')).getByRole('heading', { level: 2, name: '收件箱' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-stats')).toHaveTextContent('3 未读 · 8 个邮件');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-unread')).toHaveTextContent('3 未读');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-total')).toHaveTextContent('8 个邮件');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-page')).toHaveTextContent('第 1 页');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-selection-toggle')).toHaveTextContent('批量操作');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toHaveClass('col-start-2', 'row-start-1');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-selection-toggle')).toHaveClass('col-start-2', 'row-start-3');
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-stats')).toContainElement(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-unread'));
+    expect(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-stats')).toContainElement(within(screen.getByTestId('thread-list')).getByTestId('thread-top-card-total'));
+    expect(screen.queryByText('黑曜线程栈')).not.toBeInTheDocument();
+    expect(screen.queryByText('当前邮箱视图')).not.toBeInTheDocument();
     expect(screen.getByTestId('thread-row-thread-1')).toBeInTheDocument();
     expect(screen.getByTestId('thread-row-thread-2')).toBeInTheDocument();
+    expect(screen.getByTestId('thread-select-thread-1')).toBeInTheDocument();
+    expect(screen.getByTestId('thread-select-thread-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row-read-thread-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row-star-thread-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row-archive-thread-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row-delete-thread-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('thread-row-spam-thread-1')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-row-thread-1')).queryByText('3 封')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-row-thread-2')).queryByText('1 封')).not.toBeInTheDocument();
     expect(screen.getByTestId('thread-load-more')).toBeInTheDocument();
   });
 
@@ -311,6 +335,8 @@ describe('thread-list', () => {
     await renderShell();
 
     expect(screen.getByTestId('thread-empty-state')).toBeInTheDocument();
+    expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
+    expect(screen.getByTestId('thread-empty-new-mail-button')).toBeInTheDocument();
   });
 
   it('renders a stable error state', async () => {

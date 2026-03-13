@@ -15,7 +15,7 @@ export default async function MailboxPage({
       eyebrow="邮箱"
       intro="左侧保留系统邮箱切换，中间浏览线程，右侧稳定阅读正文与附件。"
       readerTitle="邮件"
-      sectionTitle="文件夹"
+      sectionTitle=""
       sessionSummary={sessionSummary}
     >
       <ThreadReaderPane key={mailboxId} />

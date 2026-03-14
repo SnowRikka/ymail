@@ -297,6 +297,7 @@ describe('search', () => {
 
     expect(screen.getByText('没有找到“contract”的结果')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '清除条件' })).toBeInTheDocument();
+    expect(screen.queryByText('当前搜索条件已正确写入 URL 并完成真实查询，但没有匹配线程。你可以放宽筛选、切换邮箱范围，或清除条件后重新搜索。')).not.toBeInTheDocument();
   });
 
   it('persists route-backed filters and thread selection on reload', async () => {

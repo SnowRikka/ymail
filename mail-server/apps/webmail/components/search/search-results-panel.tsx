@@ -220,9 +220,9 @@ export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoad
           当前搜索暂时无法返回结果，但页面结构会保持稳定，你仍可调整条件后重试。
         </ThreadListMessageCard>
       ) : (searchQuery.data?.rows.length ?? 0) === 0 ? (
-        <ThreadListMessageCard
-          actions={
-            <div className="flex flex-wrap gap-3">
+       <ThreadListMessageCard
+         actions={
+           <div className="flex flex-wrap gap-3">
               <button
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-accent/40 bg-accent px-4 py-3 text-sm font-medium text-white transition hover:bg-accent/90"
                 onClick={clearSearch}
@@ -241,7 +241,7 @@ export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoad
           eyebrow="搜索结果为空"
           title={resolvedState.query.length > 0 ? `没有找到“${resolvedState.query}”的结果` : '当前筛选没有结果'}
         >
-          当前搜索条件已正确写入 URL 并完成真实查询，但没有匹配线程。你可以放宽筛选、切换邮箱范围，或清除条件后重新搜索。
+          {null}
         </ThreadListMessageCard>
       ) : (
         <div className="mt-3 space-y-3">

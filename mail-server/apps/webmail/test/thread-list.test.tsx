@@ -415,7 +415,14 @@ describe('thread-list', () => {
 
     await renderShell();
 
-    expect(screen.getByTestId('thread-empty-state')).toBeInTheDocument();
+    const emptyState = screen.getByTestId('thread-empty-state');
+
+    expect(emptyState).toBeInTheDocument();
+    expect(emptyState).toHaveTextContent('邮件列表为空');
+    expect(emptyState).toHaveTextContent('收件箱 当前没有可展示的邮件');
+    expect(emptyState).toHaveTextContent('当前邮箱暂时没有可展示的邮件。右侧阅读器会保持稳定空态，你可以等待新邮件到达或切换到其他邮箱。');
+    expect(emptyState).not.toHaveTextContent('线程');
+    expect(emptyState).not.toHaveTextContent('Inbox');
     expect(within(screen.getByTestId('thread-list')).getByTestId('new-mail-button')).toBeInTheDocument();
     expect(screen.getByTestId('thread-empty-new-mail-button')).toBeInTheDocument();
   });

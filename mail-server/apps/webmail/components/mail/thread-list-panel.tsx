@@ -13,7 +13,7 @@ import { applyOptimisticActionToRows, createMailActionLabel, executeMailAction, 
 import { useJmapClient } from '@/lib/jmap/provider';
 import { getQueryClient } from '@/lib/query/client';
 import { buildThreadRouteHref, queryMailboxThreads, resolveThreadListRouteState, type ThreadListPageData, type ThreadListRow } from '@/lib/jmap/thread-list';
-import type { MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
+import { formatMailboxDisplayName, type MailboxNavigationItem } from '@/lib/jmap/mailbox-shell';
 
 export interface ThreadListPanelProps {
   readonly activeAccountId: string | null;
@@ -341,10 +341,10 @@ export function ThreadListPanel(props: ThreadListPanelProps) {
             </div>
           }
           dataTestId="thread-empty-state"
-          eyebrow="线程列表为空"
-          title={activeMailbox ? `${activeMailbox.name} 当前没有可展示的线程` : '没有可展示的线程'}
+          eyebrow="邮件列表为空"
+          title={activeMailbox ? `${formatMailboxDisplayName(activeMailbox)} 当前没有可展示的邮件` : '没有可展示的邮件'}
         >
-          当前邮箱暂时没有可展示的线程。右侧阅读器会保持稳定空态，你可以等待新邮件到达或切换到其他邮箱。
+          当前邮箱暂时没有可展示的邮件。右侧阅读器会保持稳定空态，你可以等待新邮件到达或切换到其他邮箱。
         </ThreadListMessageCard>
       ) : (
         <div className="mt-3 space-y-3">

@@ -255,6 +255,18 @@ describe('mailbox-shell', () => {
     expect(screen.queryByTestId('sync-status')).not.toBeInTheDocument();
     expect(screen.getByTestId('account-chip')).toBeInTheDocument();
     expect(screen.getByTestId('global-search')).toBeInTheDocument();
+    expect(screen.getByTestId('mailbox-unread-badge-inbox-id')).toHaveTextContent('4');
+    expect(screen.getByTestId('mailbox-unread-badge-junk-id')).toHaveTextContent('2');
+    expect(screen.queryByTestId('mailbox-unread-badge-sent-id')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-unread-badge-drafts-id')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-unread-badge-trash-id')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-unread-badge-archive-id')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mailbox-item-inbox-id')).toHaveAttribute('aria-label', '收件箱，未读 4 封');
+    expect(screen.getByTestId('mailbox-item-junk-id')).toHaveAttribute('aria-label', '垃圾邮件，未读 2 封');
+    expect(screen.getByTestId('mailbox-item-sent-id')).toHaveAttribute('aria-label', '已发送');
+    expect(screen.getByTestId('mailbox-item-drafts-id')).toHaveAttribute('aria-label', '草稿');
+    expect(screen.getByTestId('mailbox-item-trash-id')).toHaveAttribute('aria-label', '废纸篓');
+    expect(screen.getByTestId('mailbox-item-archive-id')).toHaveAttribute('aria-label', '归档');
     expect(screen.getByTestId('account-chip-avatar')).toHaveTextContent('P');
     expect(screen.getByTestId('account-chip-trigger')).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByTestId('account-chip-panel')).not.toBeInTheDocument();
@@ -301,6 +313,45 @@ describe('mailbox-shell', () => {
     expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveTextContent('2 未读');
     expect(within(threadList).getByTestId('thread-top-card-unread')).toHaveClass('text-accent');
     expect(within(threadList).getByTestId('thread-top-card-total')).toHaveTextContent('6 个邮件');
+  });
+
+  it('hides inbox and junk badges when their unread count is zero', async () => {
+    mockedUseQuery.mockImplementation((options) => {
+      const queryKey = Array.isArray(options.queryKey) ? options.queryKey : [];
+
+      if (queryKey[0] === 'mailbox-shell') {
+        return {
+          data: mockMailboxes.map((mailbox) => (
+            mailbox.role === 'inbox' || mailbox.role === 'junk'
+              ? { ...mailbox, unreadThreads: 0 }
+              : mailbox
+          )),
+          isError: false,
+          isLoading: false,
+        } as never;
+      }
+
+      if (queryKey[0] === 'thread-list') {
+        return {
+          data: mockThreadData,
+          isError: false,
+          isLoading: false,
+        } as never;
+      }
+
+      return {
+        data: undefined,
+        isError: false,
+        isLoading: false,
+      } as never;
+    });
+
+    await renderShell();
+
+    expect(screen.queryByTestId('mailbox-unread-badge-inbox-id')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mailbox-unread-badge-junk-id')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mailbox-item-inbox-id')).toHaveAttribute('aria-label', '收件箱');
+    expect(screen.getByTestId('mailbox-item-junk-id')).toHaveAttribute('aria-label', '垃圾邮件');
   });
 
   it('renders the fallback mail account instead of a pseudo-loaded shell when primary mail account is invalid', async () => {
@@ -365,5 +416,56 @@ describe('mailbox-shell', () => {
     fireEvent.click(screen.getByTestId('thread-empty-new-mail-button'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('/mail/compose?intent=new&accountId=primary'));
     expect(mockPush).toHaveBeenCalledWith(expect.stringContaining('draftId=fresh-'));
+  });
+
+  it.each([
+    {
+      expectedTitle: '收件箱 当前没有可展示的邮件',
+      mailboxId: 'inbox-id',
+      pathname: '/mail/inbox',
+      search: 'accountId=primary&mailboxId=inbox-id',
+    },
+    {
+      expectedTitle: '已发送 当前没有可展示的邮件',
+      mailboxId: 'sent-id',
+      pathname: '/mail/mailbox/sent-id',
+      search: 'accountId=primary&mailboxId=sent-id',
+    },
+    {
+      expectedTitle: '草稿 当前没有可展示的邮件',
+      mailboxId: 'drafts-id',
+      pathname: '/mail/mailbox/drafts-id',
+      search: 'accountId=primary&mailboxId=drafts-id',
+    },
+    {
+      expectedTitle: '垃圾邮件 当前没有可展示的邮件',
+      mailboxId: 'junk-id',
+      pathname: '/mail/mailbox/junk-id',
+      search: 'accountId=primary&mailboxId=junk-id',
+    },
+    {
+      expectedTitle: '废纸篓 当前没有可展示的邮件',
+      mailboxId: 'trash-id',
+      pathname: '/mail/mailbox/trash-id',
+      search: 'accountId=primary&mailboxId=trash-id',
+    },
+  ])('localizes empty-state copy for $mailboxId', async ({ expectedTitle, pathname, search }) => {
+    mockPathname = pathname;
+    mockSearch = search;
+    installQueryMocks([]);
+
+    await renderShell();
+
+    const emptyState = screen.getByTestId('thread-empty-state');
+
+    expect(emptyState).toHaveTextContent('邮件列表为空');
+    expect(emptyState).toHaveTextContent(expectedTitle);
+    expect(emptyState).toHaveTextContent('当前邮箱暂时没有可展示的邮件。右侧阅读器会保持稳定空态，你可以等待新邮件到达或切换到其他邮箱。');
+    expect(emptyState).not.toHaveTextContent('线程');
+    expect(emptyState).not.toHaveTextContent('Inbox');
+    expect(emptyState).not.toHaveTextContent('Sent');
+    expect(emptyState).not.toHaveTextContent('Drafts');
+    expect(emptyState).not.toHaveTextContent('Junk');
+    expect(emptyState).not.toHaveTextContent('Trash');
   });
 });

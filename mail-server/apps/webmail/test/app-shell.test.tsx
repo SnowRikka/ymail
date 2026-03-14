@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,10 +8,6 @@ import { MailShell } from '@/components/mail/mail-shell';
 import { AppProviders } from '@/components/providers/app-providers';
 import { isProtectedMailboxPath, toLoginRedirect } from '@/lib/auth/guard';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
-
-vi.mock('@/components/mail/logout-button', () => ({
-  LogoutButton: () => <button data-testid="logout-button" type="button">退出</button>,
-}));
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/mail/inbox',
@@ -197,6 +193,52 @@ describe('app-shell', () => {
     expect(screen.getByTestId('account-chip-panel')).toBeInTheDocument();
     expect(screen.getByText('Primary')).toBeInTheDocument();
     expect(screen.getByTestId('logout-button')).toBeInTheDocument();
+  });
+
+  it('keeps the account panel interactive and runs logout redirect', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const assignSpy = vi.fn();
+    const originalLocation = window.location;
+    const mockedLocation = Object.create(originalLocation) as Location;
+    const mutableWindow = window as { location?: Location };
+
+    Object.defineProperty(mockedLocation, 'assign', {
+      configurable: true,
+      value: assignSpy,
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    delete mutableWindow.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: mockedLocation,
+    });
+
+    try {
+      await renderShell();
+
+      fireEvent.click(screen.getByTestId('account-chip-trigger'));
+
+      const accountPanel = screen.getByTestId('account-chip-panel');
+      const accountHeader = accountPanel.closest('header');
+
+      if (!accountHeader) {
+        throw new Error('Expected account panel to remain inside the shell header.');
+      }
+
+      expect(accountHeader).toHaveClass('relative', 'z-20');
+
+      fireEvent.click(screen.getByTestId('logout-button'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/auth/logout', { method: 'POST' }));
+      await waitFor(() => expect(assignSpy).toHaveBeenCalledWith('/login'));
+    } finally {
+      delete mutableWindow.location;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it('renders login placeholder safely', () => {

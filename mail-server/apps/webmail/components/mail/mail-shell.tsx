@@ -163,7 +163,7 @@ export function MailShell(props: MailShellProps) {
         </a>
       </nav>
       <section className="shell-surface min-h-[calc(100vh-1rem)] rounded-[28px] border border-line/90 p-3 shadow-shell sm:min-h-[calc(100vh-1.5rem)] sm:rounded-[30px] lg:min-h-[calc(100vh-2.5rem)] lg:p-4">
-        <header className="stage-reveal rounded-[24px] border border-line/80 bg-panel/92 px-4 py-4" style={{ ['--stage-delay' as string]: '0.04s' }}>
+        <header className="stage-reveal relative z-20 rounded-[24px] border border-line/80 bg-panel/92 px-4 py-4" style={{ ['--stage-delay' as string]: '0.04s' }}>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="min-w-0 flex-1">
@@ -242,6 +242,15 @@ interface MailboxSectionProps {
   readonly titleId?: string;
 }
 
+function shouldRenderUnreadBadge(item: Pick<MailboxNavigationItem, 'role' | 'unreadCount'>) {
+  return (item.role === 'inbox' || item.role === 'junk') && item.unreadCount > 0;
+}
+
+function formatMailboxLinkAriaLabel(item: MailboxNavigationItem) {
+  const label = formatMailboxDisplayName(item);
+  return shouldRenderUnreadBadge(item) ? `${label}，未读 ${item.unreadCount} 封` : label;
+}
+
 function MailboxSection({ emptyLabel = '暂无内容', heading, items, titleId }: MailboxSectionProps) {
   return (
     <section>
@@ -257,7 +266,7 @@ function MailboxSection({ emptyLabel = '暂无内容', heading, items, titleId }
           {items.map((item, index) => (
             <Link
               aria-current={item.isActive ? 'page' : undefined}
-              aria-label={`${formatMailboxDisplayName(item)}，未读 ${item.unreadCount} 封`}
+              aria-label={formatMailboxLinkAriaLabel(item)}
               className={cn(
                 'stage-reveal group relative flex items-center gap-3 overflow-hidden rounded-[18px] border px-3 py-3 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                 item.isActive
@@ -277,9 +286,11 @@ function MailboxSection({ emptyLabel = '暂无内容', heading, items, titleId }
                 <span className="block truncate font-medium text-current">{formatMailboxDisplayName(item)}</span>
                 <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-[0.18em] text-muted">{item.kind}</span>
               </span>
-              <span className={cn('rounded-full border px-2 py-0.5 font-mono text-[10px]', item.unreadCount > 0 ? 'border-accent/30 bg-accent/12 text-accent' : 'border-line/70 text-muted')}>
-                {item.unreadCount}
-              </span>
+              {shouldRenderUnreadBadge(item) ? (
+                <span className="rounded-full border border-accent/30 bg-accent/12 px-2 py-0.5 font-mono text-[10px] text-accent" data-testid={`mailbox-unread-badge-${item.id}`}>
+                  {item.unreadCount}
+                </span>
+              ) : null}
             </Link>
           ))}
         </nav>

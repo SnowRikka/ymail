@@ -338,7 +338,7 @@ describe('compose-core', () => {
     expect(screen.getByTestId('compose-quoted-content')).toHaveTextContent('第二行');
   });
 
-  it('loads a server draft route directly into the compose editor', async () => {
+  it('loads a server draft route directly into the compose editor without overriding its stored identity', async () => {
     mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1');
     currentClient = createClientMock();
     currentClient.identity.get.mockResolvedValueOnce({
@@ -357,20 +357,23 @@ describe('compose-core', () => {
     });
     mockedUseJmapClient.mockReturnValue(currentClient as never);
 
-    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'alias@example.com' }} />);
 
     await waitFor(() => expect(currentClient.email.get).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'primary', ids: ['server-draft-1'] })));
     await waitFor(() => expect(screen.getByTestId('identity-select')).toHaveValue('identity-1'));
     await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('Alice <alice@example.com>, bob@example.com'));
 
+    expect(screen.getByTestId('identity-select')).toBeDisabled();
     expect(screen.getByTestId('compose-subject')).toHaveValue('服务器草稿主题');
     expect(screen.getByTestId('compose-body')).toHaveValue('服务器草稿正文');
     expect(screen.getByText('server-note.txt')).toBeVisible();
     expect(screen.getByTestId('draft-status')).toHaveTextContent(/已(载入服务器草稿|恢复 .* 暂存的草稿。)/);
+    expect(screen.getByTestId('compose-delete')).toBeVisible();
+    expect(screen.getByTestId('compose-delete').nextElementSibling).toBe(screen.getByTestId('compose-save-close'));
     expect(screen.queryByTestId('compose-quoted-block')).not.toBeInTheDocument();
   });
 
-  it('defaults a fresh compose to the current account identity and keeps the draft-status row aligned', async () => {
+  it('defaults a fresh compose to the logged-in account identity and keeps the field read-only', async () => {
     currentClient = createClientMock();
     currentClient.identity.get.mockResolvedValueOnce({
       ok: true,
@@ -379,8 +382,8 @@ describe('compose-core', () => {
         response: {
           accountId: 'primary',
           list: [
-            { email: 'z-current@example.com', id: 'identity-current', name: 'Z Current', replyTo: [], state: 'identity-state', textSignature: null },
             { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], state: 'identity-state', textSignature: null },
+            { email: 'owner@example.com', id: 'identity-current', name: 'Owner', replyTo: [], state: 'identity-state', textSignature: null },
           ],
           state: 'identity-state',
         },
@@ -388,18 +391,46 @@ describe('compose-core', () => {
     });
     mockedUseJmapClient.mockReturnValue(currentClient as never);
 
-    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'global-login@example.com' }} />);
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
 
     const select = await screen.findByTestId('identity-select');
     await waitFor(() => expect(select).toHaveValue('identity-current'));
     expect(select).not.toHaveValue('');
-    expect(select).toHaveTextContent('Z Current <z-current@example.com>');
-
+    expect(select).toHaveTextContent('Owner <owner@example.com>');
+    expect(select).toBeDisabled();
+    expect(select.closest('div.grid')?.className).toContain('xl:items-end');
     expect(screen.getByText('草稿状态')).toBeVisible();
     expect(screen.getByTestId('draft-status-field').className).toContain('flex');
     expect(screen.getByTestId('draft-status-field').className).toContain('items-center');
     expect(screen.getByTestId('draft-status-field').className).toContain('justify-between');
     expect(screen.getByTestId('draft-status')).toHaveTextContent('等待修改');
+    expect(screen.queryByTestId('compose-delete')).not.toBeInTheDocument();
+  });
+
+  it('shows delete for a restored local draft immediately to the left of save-close', async () => {
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=draft-local-restore&returnTo=/mail/drafts');
+    useComposeDraftStore.getState().saveDraft('new::primary::explicit-draft::draft-local-restore', {
+      accountId: 'primary',
+      attachments: [],
+      form: {
+        body: '本地恢复正文',
+        subject: '本地恢复主题',
+        to: 'restore@example.com',
+      },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: '/mail/drafts',
+      serverDraftId: 'draft-local-restore',
+      threadId: null,
+      updatedAt: Date.now(),
+    } satisfies ComposeDraftRecord);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(screen.getByTestId('compose-delete')).toBeVisible());
+    expect(screen.getByTestId('compose-delete')).toBeVisible();
+    expect(screen.getByTestId('compose-delete').nextElementSibling).toBe(screen.getByTestId('compose-save-close'));
   });
 
   it('registers an unsaved-change beforeunload guard', () => {

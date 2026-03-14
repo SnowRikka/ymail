@@ -31,6 +31,7 @@ import {
   hasPendingAttachment,
   persistComposeDraft,
   selectDefaultIdentityId,
+  selectIdentityIdByEmail,
   submitComposeMessage,
   toComposeIdentityOptions,
   toComposeMailboxRoleState,
@@ -38,7 +39,6 @@ import {
   uploadAttachmentThroughBff,
   type ComposeAttachmentRecord,
   type ComposeDraftStatus,
-  type ComposeIdentityOption,
   type ComposeIdentityState,
   type ComposeSubmissionFailure,
 } from '@/lib/jmap/compose-submit';
@@ -103,16 +103,6 @@ function formatDraftTimestamp(value: number) {
 
 function buildFallbackCloseHref(accountId: string | null) {
   return accountId ? `/mail/inbox?accountId=${encodeURIComponent(accountId)}` : '/mail/inbox';
-}
-
-function selectIdentityIdByEmail(identities: readonly ComposeIdentityOption[], email: string | null) {
-  const normalizedEmail = email?.trim().toLowerCase() ?? '';
-
-  if (normalizedEmail.length === 0) {
-    return null;
-  }
-
-  return identities.find((identity) => identity.email.toLowerCase() === normalizedEmail)?.id ?? null;
 }
 
 function intentTitle(intent: ReturnType<typeof parseComposeRouteState>['intent']) {
@@ -207,6 +197,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const needsQuotedPrefill = routeState.intent !== 'new';
   const fallbackCloseHref = buildFallbackCloseHref(accountId);
   const returnToHref = routeState.returnTo ?? fallbackCloseHref;
+  const canDeleteDraft = Boolean(storedDraft || routeServerDraftId);
 
   const threadQuery = useQuery({
     enabled: needsQuotedPrefill && Boolean(accountId && routeState.threadId) && (!storedDraft || !storedDraft.quoted),
@@ -410,6 +401,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
     return selectIdentityIdByEmail(identityQuery.data ?? [], initialLoad?.preferredIdentityEmail ?? null);
   }, [identityQuery.data, initialLoad?.identityId, initialLoad?.preferredIdentityEmail]);
+  const loggedInIdentityId = useMemo(() => selectIdentityIdByEmail(identityQuery.data ?? [], sessionSummary?.username ?? null), [identityQuery.data, sessionSummary?.username]);
 
   const attachmentSignature = useMemo(() => buildAttachmentSignature(attachments), [attachments]);
   const isDirty = !areComposeFormStatesEqual(formState, baselineState)
@@ -442,20 +434,20 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     }
 
     const identities = identityQuery.data ?? [];
-    setIdentityState({ kind: 'ready', identities, selectedIdentityId: selectDefaultIdentityId(identities, selectedIdentityId, draftPreferredIdentityId) });
-  }, [draftPreferredIdentityId, identityQuery.data, identityQuery.error, identityQuery.isError, identityQuery.isLoading, selectedIdentityId]);
+    setIdentityState({ kind: 'ready', identities, selectedIdentityId: selectDefaultIdentityId(identities, selectedIdentityId, draftPreferredIdentityId, loggedInIdentityId) });
+  }, [draftPreferredIdentityId, identityQuery.data, identityQuery.error, identityQuery.isError, identityQuery.isLoading, loggedInIdentityId, selectedIdentityId]);
 
   useEffect(() => {
     if (identityState.kind !== 'ready') {
       return;
     }
 
-    const nextIdentityId = selectDefaultIdentityId(identityState.identities, selectedIdentityId, draftPreferredIdentityId);
+    const nextIdentityId = selectDefaultIdentityId(identityState.identities, selectedIdentityId, draftPreferredIdentityId, loggedInIdentityId);
 
     if (nextIdentityId !== selectedIdentityId) {
       setSelectedIdentityId(nextIdentityId);
     }
-  }, [draftPreferredIdentityId, identityState, selectedIdentityId]);
+  }, [draftPreferredIdentityId, identityState, loggedInIdentityId, selectedIdentityId]);
 
   useEffect(() => {
     if (!initialLoad) {
@@ -768,6 +760,19 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     router.push(returnToHref);
   };
 
+  const handleDeleteDraft = async () => {
+    hasSentRef.current = true;
+    await queueServerDraftDestroy();
+
+    if (serverDraftIdRef.current) {
+      hasSentRef.current = false;
+      return;
+    }
+
+    clearStoredDraft();
+    router.push(returnToHref);
+  };
+
   const handleAttachmentSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
@@ -943,20 +948,14 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       ) : (
         <form className="space-y-4" data-testid="compose-form" onKeyDown={handleKeyDown}>
           <section className="rounded-[24px] border border-line/80 bg-canvas/66 p-4 lg:p-5">
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="grid gap-4 xl:items-end xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <label className="block text-sm text-ink">
                 发件身份
                 <select
                   aria-label="发件身份"
-                  className="mt-2 min-h-[52px] w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent"
+                  className="mt-2 w-full rounded-2xl border border-line bg-panel/90 px-4 py-3 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent disabled:cursor-not-allowed disabled:opacity-70"
                   data-testid="identity-select"
-                  disabled={identityState.kind !== 'ready' || identityState.identities.length === 0}
-                  onBlur={handleFieldBlur}
-                  onChange={(event) => {
-                    hasLocalSessionChangesRef.current = true;
-                    setSelectedIdentityId(event.target.value || null);
-                    setDraftStatus(createDraftStatus('idle'));
-                  }}
+                  disabled
                   value={selectedIdentityId ?? ''}
                 >
                   <option value="">{identityState.kind === 'error' ? '身份读取失败' : identityState.kind === 'loading' ? '身份载入中…' : '请选择发件身份'}</option>
@@ -1061,6 +1060,11 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
               <span className="rounded-full border border-line/70 px-2.5 py-1 font-mono uppercase tracking-[0.18em]">Ctrl / Cmd + Enter 发送</span>
             </div>
             <div className="flex flex-wrap gap-2">
+              {canDeleteDraft ? (
+                <button className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent sm:flex-none" data-testid="compose-delete" onClick={() => { void handleDeleteDraft(); }} type="button">
+                  删除草稿
+                </button>
+              ) : null}
               <button aria-keyshortcuts="Control+S Meta+S" className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-line/80 bg-panel/84 px-4 py-3 text-sm font-medium text-ink transition hover:border-accent/50 hover:text-accent sm:flex-none" data-testid="compose-save-close" onClick={() => { void saveDraftAndClose(); }} type="button">
                 暂存并关闭
               </button>

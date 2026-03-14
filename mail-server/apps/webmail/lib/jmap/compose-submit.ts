@@ -121,6 +121,16 @@ export function toComposeIdentityOptions(identities: readonly JmapIdentityObject
   return options;
 }
 
+export function selectIdentityIdByEmail(identities: readonly ComposeIdentityOption[], email: string | null) {
+  const normalizedEmail = email?.trim().toLowerCase() ?? '';
+
+  if (normalizedEmail.length === 0) {
+    return null;
+  }
+
+  return identities.find((identity) => identity.email.toLowerCase() === normalizedEmail)?.id ?? null;
+}
+
 export function selectDefaultIdentityId(
   identities: readonly ComposeIdentityOption[],
   ...preferredIdentityIds: readonly (string | null | undefined)[]

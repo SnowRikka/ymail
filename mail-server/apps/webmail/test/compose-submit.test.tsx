@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, destroyComposeDraft, persistComposeDraft, selectDefaultIdentityId, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
+import { buildComposeSubmissionRequest, buildUploadProxyPath, classifyComposeExecutionError, destroyComposeDraft, persistComposeDraft, selectDefaultIdentityId, selectIdentityIdByEmail, submitComposeMessage, toComposeIdentityOptions, toStoredAttachments, uploadAttachmentThroughBff } from '@/lib/jmap/compose-submit';
 import { queryReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
@@ -289,14 +289,16 @@ describe('compose-submit foundations', () => {
     expect(classifyComposeExecutionError({ accountId: null, capability: 'submission', kind: 'capability', message: 'bad', reason: 'missing-capability' }, 'fallback').kind).toBe('upstream-validation');
   });
 
-  it('defaults fresh compose identity from account-scoped order before placeholder fallback', () => {
+  it('resolves the logged-in account identity email before falling back to the first option', () => {
     const identities = toComposeIdentityOptions([
-      { email: 'z-current@example.com', id: 'identity-current', name: 'Z Current', replyTo: [], textSignature: undefined },
       { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], textSignature: undefined },
+      { email: 'owner@example.com', id: 'identity-current', name: 'Owner', replyTo: [], textSignature: undefined },
     ]);
 
-    expect(identities.map((identity) => identity.id)).toEqual(['identity-current', 'identity-alias']);
-    expect(selectDefaultIdentityId(identities, null)).toBe('identity-current');
+    expect(selectIdentityIdByEmail(identities, 'OWNER@example.com')).toBe('identity-current');
+    expect(selectIdentityIdByEmail(identities, 'missing@example.com')).toBe(null);
+    expect(selectDefaultIdentityId(identities, null, selectIdentityIdByEmail(identities, 'owner@example.com'))).toBe('identity-current');
+    expect(selectDefaultIdentityId(identities, null, selectIdentityIdByEmail(identities, 'missing@example.com'))).toBe('identity-alias');
     expect(selectDefaultIdentityId(identities, 'identity-alias')).toBe('identity-alias');
   });
 
@@ -306,8 +308,8 @@ describe('compose-submit foundations', () => {
       { email: 'alias@example.com', id: 'identity-alias', name: 'A Alias', replyTo: [], textSignature: undefined },
     ]);
 
-    expect(selectDefaultIdentityId(identities, null, 'identity-alias')).toBe('identity-alias');
-    expect(selectDefaultIdentityId(identities, 'missing-identity', 'identity-alias')).toBe('identity-alias');
+    expect(selectDefaultIdentityId(identities, null, 'identity-alias', selectIdentityIdByEmail(identities, 'z-current@example.com'))).toBe('identity-alias');
+    expect(selectDefaultIdentityId(identities, 'missing-identity', 'identity-alias', selectIdentityIdByEmail(identities, 'z-current@example.com'))).toBe('identity-alias');
   });
 
   it('uploads attachments through same-origin transport helper', async () => {
@@ -592,6 +594,58 @@ describe('compose-submit foundations', () => {
       destroy: ['draft-7'],
     }));
     expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']).toBeUndefined();
+  });
+
+  it('delete clears a restored local draft, destroys its server draft, and returns via the route path', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=draft-local-restore&returnTo=/mail/drafts');
+    useComposeDraftStore.getState().saveDraft('new::primary::explicit-draft::draft-local-restore', {
+      accountId: 'primary',
+      attachments: [],
+      form: { body: '待删除正文', subject: '待删除主题', to: 'draft@example.com' },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: '/mail/drafts',
+      serverDraftId: 'draft-local-restore',
+      threadId: null,
+      updatedAt: Date.now(),
+    });
+
+    const view = renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+    mockPush.mockImplementation(() => {
+      view.unmount();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('compose-delete')).toBeVisible());
+
+    fireEvent.click(screen.getByTestId('compose-delete'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      destroy: ['draft-local-restore'],
+    }));
+    await waitFor(() => expect(useComposeDraftStore.getState().drafts['new::primary::explicit-draft::draft-local-restore']).toBeUndefined());
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/drafts'));
+  });
+
+  it('delete destroys a server-draft route and returns via the existing path', async () => {
+    const client = createClientMock();
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1&returnTo=/mail/inbox?accountId=primary');
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(screen.getByTestId('compose-subject')).toHaveValue('服务器草稿主题'));
+
+    fireEvent.click(screen.getByTestId('compose-delete'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      destroy: ['server-draft-1'],
+    }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
   });
 
   it('persists unsaved compose state to server when navigating away', async () => {

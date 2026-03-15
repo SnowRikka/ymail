@@ -6,6 +6,7 @@ import type { ComposeDraftRecord } from '@/lib/jmap/compose-core';
 export interface ComposeDraftStore {
   readonly drafts: Readonly<Record<string, ComposeDraftRecord>>;
   clearDraft: (draftKey: string) => void;
+  clearDraftAliases: (input: { readonly draftKey: string; readonly serverDraftId: string | null }) => void;
   saveDraft: (draftKey: string, draft: ComposeDraftRecord) => void;
 }
 
@@ -28,6 +29,15 @@ export const useComposeDraftStore = create<ComposeDraftStore>()(persist(
     clearDraft: (draftKey) => set((state) => {
       const nextDrafts = { ...state.drafts };
       delete nextDrafts[draftKey];
+
+      return {
+        drafts: nextDrafts,
+      };
+    }),
+    clearDraftAliases: ({ draftKey, serverDraftId }) => set((state) => {
+      const nextDrafts = Object.fromEntries(
+        Object.entries(state.drafts).filter(([entryKey, draft]) => entryKey !== draftKey && (!serverDraftId || draft.serverDraftId !== serverDraftId)),
+      );
 
       return {
         drafts: nextDrafts,

@@ -312,6 +312,56 @@ describe('compose-submit foundations', () => {
     expect(selectDefaultIdentityId(identities, 'missing-identity', 'identity-alias', selectIdentityIdByEmail(identities, 'z-current@example.com'))).toBe('identity-alias');
   });
 
+  it('blocks self-send using the selected identity email instead of the session username fallback', async () => {
+    const client = createClientMock();
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1');
+    client.email.get.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        kind: 'success',
+        response: {
+          accountId: 'primary',
+          list: [{
+            attachments: [],
+            bodyValues: { 'text-part': { value: 'hello' } },
+            from: [{ email: 'alias@example.com', name: 'Alias' }],
+            id: 'server-draft-1',
+            subject: 'subject',
+            textBody: [{ partId: 'text-part', type: 'text/plain' }],
+            to: [{ email: 'alias@example.com', name: 'Alias' }],
+          }],
+          state: 'email-state',
+        },
+      },
+    });
+    client.identity.get.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        kind: 'success',
+        response: {
+          accountId: 'primary',
+          list: [
+            { email: 'alias@example.com', id: 'identity-alias', name: 'Alias', replyTo: [], state: 'identity-state', textSignature: null },
+            { email: 'owner@example.com', id: 'identity-owner', name: 'Owner', replyTo: [], state: 'identity-state', textSignature: null },
+          ],
+          state: 'identity-state',
+        },
+      },
+    });
+    mockedUseJmapClient.mockReturnValue(client as never);
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(screen.getByTestId('identity-select')).toHaveValue('identity-alias'));
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('Alias <alias@example.com>'));
+
+    fireEvent.click(screen.getByTestId('compose-send'));
+
+    await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveAttribute('aria-invalid', 'true'));
+    expect(screen.getByText('收件人不能包含当前发件地址（alias@example.com）。请移除后再发送。', { selector: '#compose-to-error' })).toBeVisible();
+    expect(client.call).not.toHaveBeenCalled();
+  });
+
   it('uploads attachments through same-origin transport helper', async () => {
     const progress: number[] = [];
 
@@ -596,7 +646,7 @@ describe('compose-submit foundations', () => {
     expect(useComposeDraftStore.getState().drafts['new::primary::standalone-thread::latest-message']).toBeUndefined();
   });
 
-  it('delete clears a restored local draft, destroys its server draft, and returns via the route path', async () => {
+  it('delete clears a restored local draft, destroys its server draft, and returns via the canonical drafts path', async () => {
     const client = createClientMock();
     mockedUseJmapClient.mockReturnValue(client as never);
     mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=draft-local-restore&returnTo=/mail/drafts');
@@ -618,6 +668,7 @@ describe('compose-submit foundations', () => {
       view.unmount();
     });
 
+    await waitFor(() => expect(client.mailbox.get).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId('compose-delete')).toBeVisible());
 
     fireEvent.click(screen.getByTestId('compose-delete'));
@@ -627,7 +678,120 @@ describe('compose-submit foundations', () => {
       destroy: ['draft-local-restore'],
     }));
     await waitFor(() => expect(useComposeDraftStore.getState().drafts['new::primary::explicit-draft::draft-local-restore']).toBeUndefined());
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/drafts'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/mailbox/drafts-id?accountId=primary'));
+  });
+
+  it('delete clears every persisted alias that points at the same server draft so refresh does not restore it again', async () => {
+    let destroyedDraftIds: readonly string[] = [];
+    const client = createClientMock();
+    client.email.set = vi.fn().mockImplementation(async (request: { create?: Record<string, unknown>; destroy?: readonly string[]; update?: Record<string, unknown> }) => {
+      if (request.destroy) {
+        destroyedDraftIds = [...request.destroy];
+
+        return {
+          ok: true,
+          result: {
+            accountId: 'primary',
+            callId: 'draft-destroy',
+            kind: 'success',
+            name: 'Email/set',
+            response: {
+              accountId: 'primary',
+              destroyed: request.destroy,
+              newState: 'email-state-destroyed',
+            },
+          },
+          session: {},
+        };
+      }
+
+      return createEmailSetMock()(request);
+    });
+    client.email.get = vi.fn().mockImplementation(async (request: { ids: readonly string[] }) => ({
+      ok: true,
+      result: {
+        kind: 'success',
+        response: {
+          accountId: 'primary',
+          list: destroyedDraftIds.includes(request.ids[0] ?? '') ? [] : [createServerDraftEmail()],
+          state: 'email-state',
+        },
+      },
+    }));
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1&returnTo=/mail/inbox?accountId=primary');
+
+    const sharedDraft = {
+      accountId: 'primary',
+      attachments: [],
+      form: { body: '会复活的旧正文', subject: '会复活的旧主题', to: 'ghost@example.com' },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: '/mail/inbox?accountId=primary',
+      serverDraftId: 'server-draft-1',
+      threadId: null,
+      updatedAt: Date.now(),
+    } as const;
+
+    useComposeDraftStore.getState().saveDraft('new::primary::explicit-draft::server-draft-1', sharedDraft);
+    useComposeDraftStore.getState().saveDraft('new::primary::standalone-thread::latest-message', sharedDraft);
+    useComposeDraftStore.getState().saveDraft('new::primary::explicit-draft::server-draft-1-alias', sharedDraft);
+
+    const firstView = renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+    mockPush.mockImplementation(() => {
+      firstView.unmount();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('compose-subject')).toHaveValue('会复活的旧主题'));
+
+    fireEvent.click(screen.getByTestId('compose-delete'));
+
+    await waitFor(() => expect(client.email.set).toHaveBeenCalledWith({
+      accountId: 'primary',
+      destroy: ['server-draft-1'],
+    }));
+    await waitFor(() => expect(Object.values(useComposeDraftStore.getState().drafts).filter((draft) => draft.serverDraftId === 'server-draft-1')).toHaveLength(0));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/mail/inbox?accountId=primary'));
+
+    renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+    await waitFor(() => expect(client.email.get).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'primary', ids: ['server-draft-1'] })));
+    await waitFor(() => expect(screen.queryByDisplayValue('会复活的旧主题')).not.toBeInTheDocument());
+    expect(screen.queryByDisplayValue('会复活的旧正文')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('ghost@example.com')).not.toBeInTheDocument();
+  });
+
+  it('opens a restored draft route without triggering mount-time save loops or maximum-depth errors', async () => {
+    const client = createClientMock();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockedUseJmapClient.mockReturnValue(client as never);
+    mockSearchParams = new URLSearchParams('intent=new&accountId=primary&draftId=server-draft-1');
+
+    useComposeDraftStore.getState().saveDraft('new::primary::standalone-thread::latest-message', {
+      accountId: 'primary',
+      attachments: [],
+      form: { body: '恢复正文', subject: '恢复主题', to: 'restore@example.com' },
+      identityId: null,
+      intent: 'new',
+      messageId: null,
+      returnTo: '/mail/inbox?accountId=primary',
+      serverDraftId: 'server-draft-1',
+      threadId: null,
+      updatedAt: Date.now(),
+    });
+
+    try {
+      renderWithQueryClient(<ComposeForm sessionSummary={{ accountCount: 1, expiresAt: '2026-03-10T11:00:00.000Z', username: 'owner@example.com' }} />);
+
+      await waitFor(() => expect(screen.getByTestId('compose-subject')).toHaveValue('恢复主题'));
+      await waitFor(() => expect(screen.getByTestId('compose-body')).toHaveValue('恢复正文'));
+      await waitFor(() => expect(screen.getByTestId('compose-to')).toHaveValue('restore@example.com'));
+      await waitFor(() => expect(client.email.set).not.toHaveBeenCalled());
+      expect(consoleError.mock.calls.some(([message]) => String(message).includes('Maximum update depth exceeded'))).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('delete destroys a server-draft route and returns via the existing path', async () => {

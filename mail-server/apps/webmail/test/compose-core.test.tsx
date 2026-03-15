@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ComposeForm } from '@/components/compose/compose-form';
-import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, hydrateComposeServerDraft, parseComposeRecipients, parseComposeRouteState, validateComposeForm, type ComposeDraftRecord } from '@/lib/jmap/compose-core';
+import { buildComposeDraftKey, buildComposePrefill, buildComposeRouteHref, buildFreshComposeRouteHref, buildForwardSubject, buildReplySubject, hydrateComposeServerDraft, normalizeComposeReturnPath, parseComposeRecipients, parseComposeRouteState, validateComposeForm, type ComposeDraftRecord } from '@/lib/jmap/compose-core';
 import { queryReaderThread, type ReaderThread } from '@/lib/jmap/message-reader';
 import { useJmapBootstrap, useJmapClient } from '@/lib/jmap/provider';
 import { COMPOSE_DRAFT_STORAGE_KEY, useComposeDraftStore } from '@/lib/state/compose-store';
@@ -265,6 +265,16 @@ describe('compose-core', () => {
     expect(validation.errors.to).toContain('invalid-address');
   });
 
+  it('rejects sending to the active sender identity email', () => {
+    const validation = validateComposeForm(
+      { body: '', subject: '', to: 'Alias <alias@example.com>, teammate@example.com' },
+      { senderEmail: 'alias@example.com' },
+    );
+
+    expect(validation.ok).toBe(false);
+    expect(validation.errors.to).toBe('收件人不能包含当前发件地址（alias@example.com）。请移除后再发送。');
+  });
+
   it('normalizes reply and forward subjects with Chinese prefixes once', () => {
     expect(buildReplySubject('Re: FW: 项目更新')).toBe('回复：项目更新');
     expect(buildForwardSubject('回复： 项目更新')).toBe('转发：项目更新');
@@ -307,6 +317,12 @@ describe('compose-core', () => {
       identityEmail: 'owner@example.com',
       serverDraftId: 'server-draft-1',
     });
+  });
+
+  it('normalizes legacy drafts return paths to the canonical mailbox route and falls back safely', () => {
+    expect(normalizeComposeReturnPath({ accountId: 'primary', draftsMailboxId: 'drafts-id', returnTo: '/mail/drafts' })).toBe('/mail/mailbox/drafts-id?accountId=primary');
+    expect(normalizeComposeReturnPath({ accountId: 'primary', draftsMailboxId: null, returnTo: '/mail/drafts?threadPage=2' })).toBe('/mail/inbox?threadPage=2&accountId=primary');
+    expect(normalizeComposeReturnPath({ accountId: 'primary', draftsMailboxId: 'drafts-id', returnTo: '/mail/inbox?accountId=primary' })).toBe('/mail/inbox?accountId=primary');
   });
 
   it('builds forward prefills from reader metadata', () => {

@@ -44,6 +44,10 @@ export interface ComposeValidationErrors {
   readonly to: string | null;
 }
 
+export interface ComposeValidationOptions {
+  readonly senderEmail?: string | null;
+}
+
 export type ComposeValidationResult =
   | {
       readonly errors: ComposeValidationErrors;
@@ -90,6 +94,7 @@ const COMPOSE_ROUTE_ORIGIN = 'https://compose.local';
 const EMPTY_LABEL = '未填写';
 const FRESH_COMPOSE_DRAFT_ID_PREFIX = 'fresh-';
 const FORWARD_HEADER = '-------- 转发邮件 --------';
+const LEGACY_DRAFTS_ROUTE_PATTERN = /^\/mail\/drafts(?:\?|$)/;
 const FORWARD_SUBJECT_PREFIX = '转发：';
 const NEW_INTENT: ComposeIntent = 'new';
 const ORIGINAL_HEADER = '-------- 原始邮件 --------';
@@ -293,10 +298,13 @@ function toStoredDraftAttachment(part: JmapEmailBodyPart): ComposeStoredAttachme
   };
 }
 
-function normalizeComposeIdentityEmail(addresses: readonly JmapEmailAddress[] | undefined) {
-  const value = addresses?.[0]?.email;
+function normalizeComposeEmail(value: string | null | undefined) {
   const email = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return email.length > 0 ? email : null;
+}
+
+function normalizeComposeIdentityEmail(addresses: readonly JmapEmailAddress[] | undefined) {
+  return normalizeComposeEmail(addresses?.[0]?.email);
 }
 
 function quotePlainText(value: string) {
@@ -423,6 +431,36 @@ export function buildFreshComposeRouteHref(routeState: Pick<ComposeRouteState, '
   });
 }
 
+export function normalizeComposeReturnPath(input: {
+  readonly accountId: string | null;
+  readonly draftsMailboxId: string | null;
+  readonly returnTo: string | null;
+}) {
+  if (!input.returnTo || !input.returnTo.startsWith('/mail/')) {
+    return null;
+  }
+
+  if (!LEGACY_DRAFTS_ROUTE_PATTERN.test(input.returnTo)) {
+    return input.returnTo;
+  }
+
+  const url = new URL(input.returnTo, COMPOSE_ROUTE_ORIGIN);
+  const accountId = url.searchParams.get('accountId') ?? input.accountId;
+  url.searchParams.delete('mailboxId');
+
+  if (accountId) {
+    url.searchParams.set('accountId', accountId);
+  }
+
+  if (input.draftsMailboxId) {
+    url.pathname = `/mail/mailbox/${encodeURIComponent(input.draftsMailboxId)}`;
+    return `${url.pathname}${url.search}`;
+  }
+
+  url.pathname = '/mail/inbox';
+  return `${url.pathname}${url.search}`;
+}
+
 export function hydrateComposeServerDraft(email: JmapEmailObject): ComposeHydratedServerDraft | null {
   const serverDraftId = normalizeComposeDraftId(email.id);
 
@@ -506,12 +544,18 @@ export function parseComposeRecipients(value: string) {
   } as const;
 }
 
-export function validateComposeForm(form: ComposeFormState): ComposeValidationResult {
+export function validateComposeForm(form: ComposeFormState, options: ComposeValidationOptions = {}): ComposeValidationResult {
   const parsedRecipients = parseComposeRecipients(form.to);
+  const senderEmail = normalizeComposeEmail(options.senderEmail);
+  const hasSelfRecipient = senderEmail
+    ? parsedRecipients.recipients.some((recipient) => recipient.email === senderEmail)
+    : false;
   const toError = parsedRecipients.invalid.length > 0
     ? `以下地址无效：${parsedRecipients.invalid.join('，')}`
     : parsedRecipients.recipients.length === 0
       ? '至少填写一个有效收件人。'
+      : hasSelfRecipient
+        ? `收件人不能包含当前发件地址（${senderEmail}）。请移除后再发送。`
       : null;
   const errors: ComposeValidationErrors = {
     body: null,

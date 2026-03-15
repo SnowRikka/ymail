@@ -16,6 +16,7 @@ import {
   hydrateComposeServerDraft,
   hasComposeContent,
   isFreshComposeDraftId,
+  normalizeComposeReturnPath,
   parseComposeRouteState,
   type ComposeDraftRecord,
   type ComposeFormState,
@@ -189,6 +190,7 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const latestSnapshotRef = useRef<DraftSnapshot>({ attachments: [], form: EMPTY_COMPOSE_FORM_STATE, identityId: null, quoted: null });
   const latestRouteStateRef = useRef(routeState);
   const latestAccountIdRef = useRef(accountId);
+  const unmountCleanupRef = useRef<() => void>(() => undefined);
   const hasSentRef = useRef(false);
   const isMountedRef = useRef(true);
   const serverDraftIdRef = useRef<string | null>(storedDraft?.serverDraftId ?? routeServerDraftId);
@@ -196,7 +198,6 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   const selfEmail = sessionSummary?.username?.trim().toLowerCase() ?? null;
   const needsQuotedPrefill = routeState.intent !== 'new';
   const fallbackCloseHref = buildFallbackCloseHref(accountId);
-  const returnToHref = routeState.returnTo ?? fallbackCloseHref;
   const canDeleteDraft = Boolean(storedDraft || routeServerDraftId);
 
   const threadQuery = useQuery({
@@ -286,6 +287,11 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   });
 
   const mailboxRoleState = useMemo(() => toComposeMailboxRoleState(mailboxQuery.data ?? []), [mailboxQuery.data]);
+  const returnToHref = useMemo(() => normalizeComposeReturnPath({
+    accountId,
+    draftsMailboxId: mailboxRoleState.draftsId,
+    returnTo: routeState.returnTo,
+  }) ?? fallbackCloseHref, [accountId, fallbackCloseHref, mailboxRoleState.draftsId, routeState.returnTo]);
   const selectedIdentity = identityState.kind === 'ready'
     ? identityState.identities.find((identity) => identity.id === selectedIdentityId) ?? null
     : null;
@@ -500,11 +506,15 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     intent: latestRouteStateRef.current.intent,
     messageId: latestRouteStateRef.current.messageId,
     quoted: snapshot.quoted,
-    returnTo: latestRouteStateRef.current.returnTo,
+    returnTo: normalizeComposeReturnPath({
+      accountId: latestAccountIdRef.current,
+      draftsMailboxId: mailboxRoleState.draftsId,
+      returnTo: latestRouteStateRef.current.returnTo,
+    }),
     serverDraftId,
     threadId: latestRouteStateRef.current.threadId,
     updatedAt,
-  }), []);
+  }), [mailboxRoleState.draftsId]);
 
   const storeDraftLocally = useCallback((snapshot: DraftSnapshot, serverDraftId: string | null = serverDraftIdRef.current) => {
     useComposeDraftStore.getState().saveDraft(storedDraftKey, buildStoredDraftRecord(snapshot, Date.now(), serverDraftId));
@@ -512,12 +522,14 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
 
   const clearStoredDraft = useCallback(() => {
     const store = useComposeDraftStore.getState();
-    store.clearDraft(storedDraftKey);
+    const activeServerDraftId = serverDraftIdRef.current ?? storedDraft?.serverDraftId ?? routeServerDraftId;
+
+    store.clearDraftAliases({ draftKey: storedDraftKey, serverDraftId: activeServerDraftId });
 
     if (storedDraftKey !== draftKey) {
-      store.clearDraft(draftKey);
+      store.clearDraftAliases({ draftKey, serverDraftId: activeServerDraftId });
     }
-  }, [draftKey, storedDraftKey]);
+  }, [draftKey, routeServerDraftId, storedDraft?.serverDraftId, storedDraftKey]);
 
   const resolveMailboxRoleStateForPersistence = useCallback(async () => {
     if (mailboxRoleState.draftsId) {
@@ -669,7 +681,30 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
     }
 
     setDraftStatus(createDraftStatus('saved', reason === 'close' ? '草稿已暂存，本次关闭不会丢失输入内容。' : '草稿已自动保存。'));
-    return 'saved' as const;
+      return 'saved' as const;
+  }, [clearStoredDraft, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
+
+  useEffect(() => {
+    unmountCleanupRef.current = () => {
+      const latestSnapshot = latestSnapshotRef.current;
+
+      if (hasSentRef.current) {
+        return;
+      }
+
+      if (!hasComposeContent({ ...latestSnapshot.form, body: composeBodyWithQuotedContent(latestSnapshot.form.body, latestSnapshot.quoted) }) && latestSnapshot.attachments.length === 0) {
+        clearStoredDraft();
+
+        if (serverDraftIdRef.current) {
+          void queueServerDraftDestroy(true);
+        }
+
+        return;
+      }
+
+      storeDraftLocally(latestSnapshot);
+      void queueServerDraftSave(latestSnapshot, true);
+    };
   }, [clearStoredDraft, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
 
   useEffect(() => {
@@ -699,25 +734,8 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
   }, [isDirty]);
 
   useEffect(() => () => {
-    const latestSnapshot = latestSnapshotRef.current;
-
-    if (hasSentRef.current) {
-      return;
-    }
-
-    if (!hasComposeContent({ ...latestSnapshot.form, body: composeBodyWithQuotedContent(latestSnapshot.form.body, latestSnapshot.quoted) }) && latestSnapshot.attachments.length === 0) {
-      clearStoredDraft();
-
-      if (serverDraftIdRef.current) {
-        void queueServerDraftDestroy(true);
-      }
-
-      return;
-    }
-
-    storeDraftLocally(latestSnapshot);
-    void queueServerDraftSave(latestSnapshot, true);
-  }, [clearStoredDraft, queueServerDraftDestroy, queueServerDraftSave, storeDraftLocally]);
+    unmountCleanupRef.current();
+  }, []);
 
   const updateField = <Key extends keyof ComposeFormState>(key: Key, value: ComposeFormState[Key]) => {
     hasLocalSessionChangesRef.current = true;
@@ -840,7 +858,9 @@ export function ComposeForm({ sessionSummary }: { readonly sessionSummary?: Safe
       return;
     }
 
-    const validation = validateComposeForm(formState);
+    const validation = validateComposeForm(formState, {
+      senderEmail: selectedIdentity?.email ?? selfEmail,
+    });
 
     if (!validation.ok) {
       setValidationErrors(validation.errors);

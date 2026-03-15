@@ -13,11 +13,11 @@ export interface ThreadBulkActionBarProps {
 }
 
 export function ThreadBulkActionBar({ archiveMailboxId, currentMailboxRole, disabled = false, onAction, selectedCount }: ThreadBulkActionBarProps) {
-  if (selectedCount < 2) {
+  const deleteOnlyActions = isDeleteOnlyMailboxRole(currentMailboxRole);
+  if (selectedCount === 0 || (!deleteOnlyActions && selectedCount < 2)) {
     return null;
   }
 
-  const deleteOnlyActions = isDeleteOnlyMailboxRole(currentMailboxRole);
   const hideReadAction = deleteOnlyActions || currentMailboxRole === 'archive';
   const hideSpamAction = shouldHideSpamActionForMailboxRole(currentMailboxRole);
   const visibility = deleteOnlyActions

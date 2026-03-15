@@ -427,7 +427,7 @@ describe('mail-actions', () => {
     });
   });
 
-  it('shows the bulk action bar only for multi-select and uses mail wording', () => {
+  it('keeps the bulk action bar multi-select for inbox and uses mail wording', () => {
     renderPanel({ email: { set: vi.fn() } } as unknown as JmapClient, [createRow('thread-1'), createRow('thread-2')]);
 
     expect(screen.getByRole('button', { name: '批量操作' })).toBeInTheDocument();
@@ -504,7 +504,7 @@ describe('mail-actions', () => {
     });
   });
 
-  it('removes row actions and keeps delete-only bulk actions in drafts sent and trash mailboxes', () => {
+  it('shows delete-only bulk actions after a single selection in drafts sent and trash mailboxes', () => {
     for (const role of ['drafts', 'sent', 'trash'] as const) {
       const mailbox = getMailboxByRole(mailboxItems, role);
       const threadId = `${role}-thread`;
@@ -517,7 +517,8 @@ describe('mail-actions', () => {
 
       expectRowActionsRemoved(threadId);
       fireEvent.click(screen.getByTestId(`thread-select-${threadId}`));
-      fireEvent.click(screen.getByTestId(`thread-select-${threadId}-2`));
+      expect(screen.getByTestId('thread-bulk-bar')).toBeInTheDocument();
+      expect(screen.getByText('已选择 1 个邮件')).toBeInTheDocument();
       expectDeleteOnlyBulkActions();
       panel.unmount();
     }

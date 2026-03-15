@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { AUTH_COOKIE_NAME, getExpiredAuthCookieOptions } from '@/lib/auth/cookie';
-import { deleteAppSession, getAppSessionFromCookieValue } from '@/lib/auth/store';
+import { cacheAppSessionUploadUrl, deleteAppSession, getAppSessionFromCookieValue } from '@/lib/auth/store';
 import { fetchUpstreamJmapSession } from '@/lib/auth/upstream';
 import { createPlaywrightTestJmapSession, isPlaywrightTestSession } from '@/lib/jmap/playwright-test-mode';
 
@@ -41,6 +41,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ message: upstreamSession.message }, { status: upstreamSession.status });
   }
+
+  cacheAppSessionUploadUrl(session.id, upstreamSession.jmap.uploadUrl);
 
   return NextResponse.json(upstreamSession.jmap);
 }

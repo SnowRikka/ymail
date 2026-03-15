@@ -10,6 +10,7 @@ type AppSession = {
   expiresAt: number;
   id: string;
   testMode: boolean;
+  uploadUrl: string | null;
   username: string;
 };
 
@@ -37,7 +38,7 @@ function pruneExpiredSessions(now: number) {
 }
 
 export function createAppSession(
-  input: Pick<AppSession, 'accountCount' | 'authorizationHeader' | 'username'> & Partial<Pick<AppSession, 'testMode'>>,
+  input: Pick<AppSession, 'accountCount' | 'authorizationHeader' | 'username'> & Partial<Pick<AppSession, 'testMode' | 'uploadUrl'>>,
   now = Date.now(),
 ) {
   pruneExpiredSessions(now);
@@ -48,10 +49,34 @@ export function createAppSession(
     expiresAt: getExpiry(now),
     id: randomBytes(32).toString('hex'),
     testMode: input.testMode === true,
+    uploadUrl: typeof input.uploadUrl === 'string' && input.uploadUrl.trim().length > 0 ? input.uploadUrl.trim() : null,
   };
 
   getSessionStore().set(session.id, session);
   return session;
+}
+
+export function cacheAppSessionUploadUrl(sessionId?: string | null, uploadUrl?: string | null) {
+  if (!isOpaqueSessionId(sessionId)) {
+    return null;
+  }
+
+  const sessionStore = getSessionStore();
+  const session = sessionStore.get(sessionId);
+
+  if (!session) {
+    return null;
+  }
+
+  const nextUploadUrl = typeof uploadUrl === 'string' && uploadUrl.trim().length > 0 ? uploadUrl.trim() : null;
+
+  if (session.uploadUrl === nextUploadUrl) {
+    return session;
+  }
+
+  const nextSession = { ...session, uploadUrl: nextUploadUrl };
+  sessionStore.set(sessionId, nextSession);
+  return nextSession;
 }
 
 export function getAppSessionById(sessionId?: string | null, options?: { now?: number; touch?: boolean }) {

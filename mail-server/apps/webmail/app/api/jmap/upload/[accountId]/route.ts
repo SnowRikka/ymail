@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { AUTH_COOKIE_NAME, getExpiredAuthCookieOptions } from '@/lib/auth/cookie';
-import { deleteAppSession, getAppSessionFromCookieValue } from '@/lib/auth/store';
+import { cacheAppSessionUploadUrl, deleteAppSession, getAppSessionFromCookieValue } from '@/lib/auth/store';
 import { fetchUpstreamJmapSession } from '@/lib/auth/upstream';
 
 function unauthorizedResponse(clearCookie: boolean) {
@@ -48,18 +48,27 @@ export async function POST(
     return unauthorizedResponse(Boolean(sessionId));
   }
 
-  const upstreamSession = await fetchUpstreamJmapSession(session.authorizationHeader);
+  const { accountId } = await context.params;
+  const cachedUploadUrl = typeof session.uploadUrl === 'string' && session.uploadUrl.trim().length > 0 ? session.uploadUrl : null;
+  let uploadUrl = cachedUploadUrl;
 
-  if (!upstreamSession.ok) {
-    if (upstreamSession.unauthorized) {
-      deleteAppSession(session.id);
-      return unauthorizedResponse(true);
+  if (!uploadUrl) {
+    const upstreamSession = await fetchUpstreamJmapSession(session.authorizationHeader);
+
+    if (!upstreamSession.ok) {
+      if (upstreamSession.unauthorized) {
+        deleteAppSession(session.id);
+        return unauthorizedResponse(true);
+      }
+
+      return NextResponse.json({ message: upstreamSession.message }, { status: upstreamSession.status });
     }
 
-    return NextResponse.json({ message: upstreamSession.message }, { status: upstreamSession.status });
+    uploadUrl = upstreamSession.jmap.uploadUrl;
+    cacheAppSessionUploadUrl(session.id, uploadUrl);
   }
 
-  const { accountId } = await context.params;
+  const fileName = readFileName(request);
 
   let body: ArrayBuffer;
 
@@ -72,14 +81,14 @@ export async function POST(
   let upstreamResponse: Response;
 
   try {
-    upstreamResponse = await fetch(buildUploadUrl(upstreamSession.jmap.uploadUrl, accountId), {
+    upstreamResponse = await fetch(buildUploadUrl(uploadUrl, accountId), {
       body,
       headers: {
         accept: 'application/json',
         authorization: session.authorizationHeader,
         'content-length': String(body.byteLength),
         'content-type': request.headers.get('content-type') ?? 'application/octet-stream',
-        ...(readFileName(request) ? { 'x-file-name': readFileName(request) as string } : {}),
+        ...(fileName ? { 'x-file-name': fileName } : {}),
       },
       method: 'POST',
     });

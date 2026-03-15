@@ -36,6 +36,7 @@ export async function POST(request: Request) {
   const session = createAppSession({
     accountCount: verified.accountCount,
     authorizationHeader: verified.authorizationHeader,
+    uploadUrl: verified.jmap.uploadUrl,
     username: verified.username,
   });
 

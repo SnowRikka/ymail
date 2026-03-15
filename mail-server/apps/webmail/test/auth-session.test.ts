@@ -5,6 +5,7 @@ import { POST as loginPost } from '@/app/auth/login/route';
 import { POST as logoutPost } from '@/app/auth/logout/route';
 import { GET as sessionGet } from '@/app/auth/session/route';
 import { POST as jmapPost } from '@/app/api/jmap/route';
+import { POST as uploadPost } from '@/app/api/jmap/upload/[accountId]/route';
 import { AUTH_COOKIE_NAME, AUTH_SESSION_MAX_AGE_SECONDS, isOpaqueSessionId } from '@/lib/auth/cookie';
 import { createAppSession, getAppSessionById, resetAuthSessionStoreForTests } from '@/lib/auth/store';
 
@@ -329,5 +330,55 @@ describe('auth-session', () => {
     expect(await response.json()).toEqual({ message: '登录状态已失效，请重新登录。' });
     expect(readSetCookie(response)).toContain('Max-Age=0');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the cached upload URL so attachment uploads do not fail on avoidable session refetch 502s', async () => {
+    const session = createAppSession({
+      accountCount: 1,
+      authorizationHeader: 'Basic hidden',
+      uploadUrl: 'https://mail.example.com/upload/{accountId}',
+      username: 'upload@example.com',
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://mail.example.com/upload/primary') {
+        return new Response(JSON.stringify({ accountId: 'primary', blobId: 'blob-1', size: 4, type: 'text/plain' }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      return new Response('unexpected', { status: 500 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await uploadPost(
+      new NextRequest('http://localhost/api/jmap/upload/primary', {
+        body: new Uint8Array([1, 2, 3, 4]),
+        headers: {
+          'content-type': 'text/plain',
+          cookie: `${AUTH_COOKIE_NAME}=${session.id}`,
+          'x-file-name': encodeURIComponent('note.txt'),
+        },
+        method: 'POST',
+      }),
+      { params: Promise.resolve({ accountId: 'primary' }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accountId: 'primary', blobId: 'blob-1', size: 4, type: 'text/plain' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://mail.example.com/upload/primary',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: 'Basic hidden',
+          'x-file-name': 'note.txt',
+        }),
+        method: 'POST',
+      }),
+    );
   });
 });

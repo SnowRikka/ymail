@@ -121,7 +121,7 @@ describe('realtime-route', () => {
       username: 'alice@example.com',
     });
 
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url === 'https://mail.example.com/jmap/session') {

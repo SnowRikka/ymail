@@ -264,6 +264,18 @@ describe('search', () => {
     expect(optionLabels).not.toEqual(expect.arrayContaining(['Inbox', 'Sent', 'Drafts', 'Junk', 'Trash', 'Archive']));
   });
 
+  it('does not render the empty-state helper paragraph before a search starts', async () => {
+    mockSearch = 'accountId=primary';
+
+    await renderSearchShell();
+
+    const title = screen.getByText('输入关键词或启用筛选开始搜索');
+
+    expect(title).toBeInTheDocument();
+    expect(title.closest('div')?.querySelector('p')).toBeNull();
+    expect(screen.queryByText('顶部搜索框支持直接输入，下面的范围与快速筛选会一并写入 URL，刷新或前进后退后仍能保持当前搜索状态。')).not.toBeInTheDocument();
+  });
+
   it('debounces URL updates while editing the top search field', async () => {
     vi.useFakeTimers();
     await renderSearchShell();

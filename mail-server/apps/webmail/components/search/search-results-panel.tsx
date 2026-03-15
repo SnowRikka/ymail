@@ -198,9 +198,13 @@ export function SearchResultsPanel({ activeAccountId, activeMailbox, isShellLoad
           邮箱导航尚未完成，因此搜索暂时不会发起真实查询。
         </ThreadListMessageCard>
       ) : !hasCriteria ? (
-        <ThreadListMessageCard eyebrow="等待搜索" title="输入关键词或启用筛选开始搜索">
-          顶部搜索框支持直接输入，下面的范围与快速筛选会一并写入 URL，刷新或前进后退后仍能保持当前搜索状态。
-        </ThreadListMessageCard>
+        <div className="mt-3 rounded-[24px] border border-dashed border-line/70 bg-canvas/74 p-6">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.28em] text-accent/80">
+            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+            等待搜索
+          </div>
+          <h3 className="mt-4 text-2xl font-semibold tracking-[-0.03em] text-ink">输入关键词或启用筛选开始搜索</h3>
+        </div>
       ) : searchQuery.isLoading && !searchQuery.data ? (
         <ThreadListSkeleton />
       ) : searchQuery.isError ? (
